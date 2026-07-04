@@ -87,7 +87,7 @@ console.log(will.status, will.balance, will.beneficiaries);
 ## Local Setup
 
 ```bash
-git clone git@github-icentedward76:icentedward76-sketch/sorowill-sdk.git
+git clone https://github.com/SoroWill/sorowill-sdk.git
 cd sorowill-sdk
 npm install
 npm run typecheck
