@@ -1,3 +1,5 @@
+<img src="./docs/logo.svg" alt="SoroWill" width="56" height="56" />
+
 # @sorowill/sdk
 
 **TypeScript SDK for SoroWill — trustless on-chain inheritance on Stellar Soroban**
