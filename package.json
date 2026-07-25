@@ -26,6 +26,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ledgerhq/hw-app-str": "^7.7.6",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^16.0.1"
   },

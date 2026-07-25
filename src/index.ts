@@ -8,6 +8,23 @@ export { connectWallet, getPublicKey, isFreighterInstalled, signTransaction } fr
 export type { WalletConnection } from './wallet';
 
 export {
+  HanaWalletAdapter,
+  HotWalletAdapter,
+  LedgerWalletAdapter,
+  LobstrWalletAdapter,
+} from './adapters';
+export type {
+  InjectedWalletProvider,
+  LedgerStellarApp,
+  LedgerTransport,
+  LedgerWalletAdapterOptions,
+  LobstrSessionClient,
+  LobstrWalletAdapterOptions,
+  SignTransactionOptions,
+  WalletAdapter,
+} from './adapters';
+
+export {
   calculateShares,
   formatDeadline,
   formatUSDC,

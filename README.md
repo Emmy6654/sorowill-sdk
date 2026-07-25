@@ -86,6 +86,62 @@ console.log(will.status, will.balance, will.beneficiaries);
 
 `isFreighterInstalled()`, `connectWallet()`, `getPublicKey()`, and `signTransaction()` wrap the [Freighter](https://www.freighter.app/) browser extension API used internally by `SoroWillClient` for all state-changing calls.
 
+## Wallet adapters
+
+All adapters implement `WalletAdapter`, whose `connect`, `disconnect`,
+`isConnected`, `getPublicKey`, and `signTransaction` methods make it possible
+to switch wallets without changing application transaction code.
+
+```ts
+import { HanaWalletAdapter, HotWalletAdapter } from '@sorowill/sdk';
+
+const hana = new HanaWalletAdapter(hanaProvider);
+const hot = new HotWalletAdapter(hotProvider);
+const connection = await hana.connect();
+```
+
+Hana and HOT accept injected providers. Explicit injection supports browser
+extensions, embedded webviews, and mini-app environments while keeping wallet
+permissions under the host application's control.
+
+### Pairing LOBSTR
+
+LOBSTR is primarily a mobile wallet, so `LobstrWalletAdapter` accepts a
+WalletConnect-compatible session client. Calling `connect()` creates a pairing
+and reports its URI through `onPairingUri`; desktop applications should render
+that URI as a QR code. Applications may also use `openDeepLink` to open the
+generated `lobstr://wallet-connect?uri=...` link on the same mobile device.
+`connect()` resolves only after LOBSTR approves the session.
+
+```ts
+const lobstr = new LobstrWalletAdapter({
+  client: walletConnectSession,
+  onPairingUri: (uri) => showQrCode(uri),
+  openDeepLink: (link) => window.location.assign(link),
+});
+await lobstr.connect();
+```
+
+### Connecting Ledger
+
+Create a Ledger transport appropriate to the environment (WebUSB, WebHID, or
+Node) and pass it to `LedgerWalletAdapter`. The default Stellar derivation path
+is `44'/148'/0'`. `signTransaction()` sends the transaction signature base to
+the Stellar app and remains pending while the device displays the confirmation
+screen; it resolves with signed XDR only after the user physically approves.
+
+```ts
+const ledger = new LedgerWalletAdapter({
+  transport,
+  network: 'testnet',
+  networkPassphrase: Networks.TESTNET,
+});
+await ledger.connect();
+const signedXdr = await ledger.signTransaction(unsignedXdr, {
+  networkPassphrase: Networks.TESTNET,
+});
+```
+
 ## Local Setup
 
 ```bash

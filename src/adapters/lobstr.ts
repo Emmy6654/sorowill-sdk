@@ -1,0 +1,68 @@
+import type { SignTransactionOptions, WalletAdapter, WalletConnection } from './types';
+
+/** Session bridge used to pair a web application with LOBSTR mobile. */
+export interface LobstrSessionClient {
+  connect(): Promise<{ uri?: string; approval: () => Promise<WalletConnection> }>;
+  disconnect(): Promise<void>;
+  isConnected(): Promise<boolean>;
+  getPublicKey(): Promise<string>;
+  signTransaction(transactionXdr: string, options: SignTransactionOptions): Promise<string>;
+}
+
+export interface LobstrWalletAdapterOptions {
+  client: LobstrSessionClient;
+  /** Receives the WalletConnect URI so a desktop app can display a QR code. */
+  onPairingUri?: (uri: string) => void;
+  /** Receives the LOBSTR deep link so the host can open it on mobile. */
+  openDeepLink?: (deepLink: string) => void;
+  /** LOBSTR's WalletConnect deep-link prefix. */
+  deepLinkPrefix?: string;
+}
+
+/**
+ * LOBSTR mobile adapter backed by a WalletConnect-compatible session client.
+ *
+ * `connect()` publishes the pairing URI before awaiting approval, allowing the
+ * host to render a QR code or open the corresponding LOBSTR deep link.
+ */
+export class LobstrWalletAdapter implements WalletAdapter {
+  readonly id = 'lobstr';
+  readonly name = 'LOBSTR';
+
+  private readonly deepLinkPrefix: string;
+
+  constructor(private readonly options: LobstrWalletAdapterOptions) {
+    this.deepLinkPrefix = options.deepLinkPrefix ?? 'lobstr://wallet-connect?uri=';
+  }
+
+  async connect(): Promise<WalletConnection> {
+    const pairing = await this.options.client.connect();
+    if (pairing.uri) {
+      this.options.onPairingUri?.(pairing.uri);
+      const deepLink = `${this.deepLinkPrefix}${encodeURIComponent(pairing.uri)}`;
+      if (this.options.openDeepLink) {
+        this.options.openDeepLink(deepLink);
+      }
+    }
+    return pairing.approval();
+  }
+
+  disconnect(): Promise<void> {
+    return this.options.client.disconnect();
+  }
+
+  isConnected(): Promise<boolean> {
+    return this.options.client.isConnected();
+  }
+
+  getPublicKey(): Promise<string> {
+    return this.options.client.getPublicKey();
+  }
+
+  signTransaction(
+    transactionXdr: string,
+    options: SignTransactionOptions,
+  ): Promise<string> {
+    return this.options.client.signTransaction(transactionXdr, options);
+  }
+}
