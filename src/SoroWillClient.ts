@@ -12,7 +12,7 @@ import {
 
 type ScVal = xdr.ScVal;
 
-import { getPublicKey, signTransaction } from './wallet';
+import { freighterAdapter, type WalletAdapter } from './wallet';
 import type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
 import { WillStatus } from './types';
 
@@ -46,6 +46,13 @@ export interface SoroWillClientOptions {
   network: SoroWillNetwork;
   /** The deployed SoroWill contract's address. */
   contractId: string;
+  /**
+   * The wallet used to read the connected account and sign transactions.
+   * Defaults to {@link freighterAdapter} (the Freighter browser extension) for
+   * backwards compatibility. Supply any {@link WalletAdapter} — e.g.
+   * `createAlbedoAdapter()` — to use a different Stellar wallet.
+   */
+  wallet?: WalletAdapter;
 }
 
 /** The raw, snake_case shape of a `Will` as decoded straight off the contract spec. */
@@ -92,6 +99,7 @@ export class SoroWillClient {
   private readonly server: rpc.Server;
   private readonly contract: Contract;
   private readonly networkPassphrase: string;
+  private readonly wallet: WalletAdapter;
   private specPromise: Promise<InstanceType<typeof Spec>> | undefined;
 
   constructor(options: SoroWillClientOptions) {
@@ -99,11 +107,12 @@ export class SoroWillClient {
     this.server = new rpc.Server(config.rpcUrl, { allowHttp: config.rpcUrl.startsWith('http://') });
     this.contract = new Contract(options.contractId);
     this.networkPassphrase = config.networkPassphrase;
+    this.wallet = options.wallet ?? freighterAdapter;
   }
 
   /** Locks `params.amount` of `params.token` and creates a new will. */
   async createWill(params: CreateWillParams): Promise<{ willId: string; txHash: string }> {
-    const owner = await getPublicKey();
+    const owner = await this.wallet.getPublicKey();
     const { txHash, returnValue } = await this.invoke('create_will', {
       owner,
       token: params.token,
@@ -123,7 +132,7 @@ export class SoroWillClient {
 
   /** Resets the check-in countdown for `willId`. */
   async checkIn(willId: string): Promise<{ txHash: string; nextDeadline: Date }> {
-    const owner = await getPublicKey();
+    const owner = await this.wallet.getPublicKey();
     const will = await this.getWill(willId);
     const { txHash, createdAt } = await this.invoke('check_in', {
       will_id: BigInt(willId),
@@ -140,7 +149,7 @@ export class SoroWillClient {
 
   /** Cancels an in-progress trigger during the grace period, resetting the countdown. */
   async emergencyCheckIn(willId: string): Promise<{ txHash: string; nextDeadline: Date }> {
-    const owner = await getPublicKey();
+    const owner = await this.wallet.getPublicKey();
     const will = await this.getWill(willId);
     const { txHash, createdAt } = await this.invoke('emergency_checkin', {
       will_id: BigInt(willId),
@@ -157,7 +166,7 @@ export class SoroWillClient {
 
   /** Cancels the will and withdraws the full balance back to the owner. */
   async cancelWill(willId: string): Promise<{ txHash: string; refundAmount: string }> {
-    const owner = await getPublicKey();
+    const owner = await this.wallet.getPublicKey();
     const will = await this.getWill(willId);
     const { txHash } = await this.invoke('cancel_will', {
       will_id: BigInt(willId),
@@ -168,7 +177,7 @@ export class SoroWillClient {
 
   /** Replaces the beneficiary list for a will before it has been triggered. */
   async updateBeneficiaries(params: UpdateBeneficiariesParams): Promise<{ txHash: string }> {
-    const owner = await getPublicKey();
+    const owner = await this.wallet.getPublicKey();
     const { txHash } = await this.invoke('update_beneficiaries', {
       will_id: BigInt(params.willId),
       owner,
@@ -179,7 +188,7 @@ export class SoroWillClient {
 
   /** Adds more of the will's token to its locked balance. */
   async topUp(willId: string, amount: string): Promise<{ txHash: string }> {
-    const owner = await getPublicKey();
+    const owner = await this.wallet.getPublicKey();
     const { txHash } = await this.invoke('top_up', {
       will_id: BigInt(willId),
       owner,
@@ -211,7 +220,7 @@ export class SoroWillClient {
    * the will's guardians have voted, the balance is released automatically.
    */
   async guardianTrigger(willId: string): Promise<{ txHash: string }> {
-    const guardian = await getPublicKey();
+    const guardian = await this.wallet.getPublicKey();
     const { txHash } = await this.invoke('guardian_trigger', {
       will_id: BigInt(willId),
       guardian,
@@ -264,7 +273,7 @@ export class SoroWillClient {
     const scArgs = spec.funcArgsToScVals(method, args);
     const operation = this.contract.call(method, ...scArgs);
 
-    const publicKey = await getPublicKey();
+    const publicKey = await this.wallet.getPublicKey();
     const account = await this.server.getAccount(publicKey);
     const builtTx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -275,7 +284,7 @@ export class SoroWillClient {
       .build();
 
     const prepared = await this.server.prepareTransaction(builtTx);
-    const signedTxXdr = await signTransaction(prepared.toXDR(), {
+    const signedTxXdr = await this.wallet.signTransaction(prepared.toXDR(), {
       networkPassphrase: this.networkPassphrase,
     });
     const signedTx = TransactionBuilder.fromXDR(signedTxXdr, this.networkPassphrase) as Transaction;
