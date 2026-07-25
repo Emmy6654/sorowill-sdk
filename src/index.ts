@@ -4,8 +4,16 @@ export type { SoroWillClientOptions, SoroWillNetwork } from './SoroWillClient';
 export type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
 export { WillStatus } from './types';
 
-export { connectWallet, getPublicKey, isFreighterInstalled, signTransaction } from './wallet';
-export type { WalletConnection } from './wallet';
+export {
+  connectWallet,
+  freighterAdapter,
+  getPublicKey,
+  isFreighterInstalled,
+  signTransaction,
+} from './wallet';
+export type { WalletAdapter, WalletConnection } from './wallet';
+
+export { createAlbedoAdapter } from './adapters/albedo';
 
 export {
   calculateShares,
