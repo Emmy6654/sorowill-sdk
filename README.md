@@ -26,6 +26,9 @@ const wallet = await connectWallet();
 const client = new SoroWillClient({
   network: 'testnet',
   contractId: 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE',
+  timeoutMs: 15_000,
+  maxConcurrentRequests: 4,
+  requestsPerSecond: 10,
 });
 
 // Create a will locking 1,000 USDC, split 60/40 between two beneficiaries,
@@ -69,6 +72,48 @@ console.log(will.status, will.balance, will.beneficiaries);
 | `getWillsByOwner` | Lists every will owned by an address (no wallet required) | `owner` | `Promise<Will[]>` |
 | `getWillsByBeneficiary` | Lists every will an address is named in (no wallet required) | `beneficiary` | `Promise<Will[]>` |
 | `guardianTrigger` | Casts a guardian vote; 2 of 3 forces an early release | `willId` | `Promise<{ txHash }>` |
+| `batch` | Simulates, signs, and submits multiple contract operations atomically | `BatchOperation[]` | `Promise<BatchResult>` |
+
+Every method also accepts an optional final `{ timeoutMs }` argument. RPC work flows through a
+shared FIFO queue configured by `maxConcurrentRequests` and `requestsPerSecond`, preventing bursts
+of reads or writes from overwhelming a public endpoint. A timeout rejects with
+`RequestTimeoutError`.
+
+## Batch transactions
+
+`batch` combines native contract calls into one Stellar transaction and therefore one Freighter
+signature prompt:
+
+```ts
+const result = await client.batch([
+  {
+    method: 'create_will',
+    args: {
+      owner: wallet.publicKey,
+      token: 'CBIEL...DAMA',
+      amount: 10_000_000n,
+      beneficiaries: [{ address: 'GBEN...AAAA', percentage: 100 }],
+      checkin_period_days: 90n,
+      grace_period_days: 7n,
+      guardians: [],
+    },
+  },
+  {
+    method: 'check_in',
+    args: { will_id: 1n, owner: wallet.publicKey },
+  },
+]);
+```
+
+The whole batch is simulated and assembled together, signed once, and submitted atomically.
+
+## Typed errors
+
+Contract failures are exposed as subclasses of `WillContractError`, including
+`WillNotFoundError`, `NotOwnerError`, `WillNotActiveError`, `WillNotTriggeredError`,
+`GracePeriodNotExpiredError`, `GracePeriodExpiredError`, `InvalidPercentagesError`,
+`AlreadyVotedError`, `NotGuardianError`, `CheckinNotDueError`, `ZeroAmountError`, and
+`TooManyBeneficiariesError`.
 
 ## Utilities
 

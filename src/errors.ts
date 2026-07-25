@@ -1,0 +1,140 @@
+/** Base class for errors raised by the SoroWill SDK. */
+export class SoroWillError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = new.target.name;
+  }
+}
+
+/** Raised when an RPC call exceeds its configured deadline. */
+export class RequestTimeoutError extends SoroWillError {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number, options?: ErrorOptions) {
+    super(`SoroWill RPC request timed out after ${timeoutMs}ms`, options);
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/** Base class for typed errors returned by the SoroWill contract. */
+export class WillContractError extends SoroWillError {
+  constructor(
+    readonly code: number,
+    readonly contractError: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+  }
+}
+
+type ContractErrorConstructor = new (options?: ErrorOptions) => WillContractError;
+
+function defineContractError(
+  code: number,
+  contractError: string,
+  message: string,
+): ContractErrorConstructor {
+  return class extends WillContractError {
+    constructor(options?: ErrorOptions) {
+      super(code, contractError, message, options);
+      this.name = `${contractError}Error`;
+    }
+  };
+}
+
+export const WillNotFoundError = defineContractError(1, 'WillNotFound', 'The will was not found');
+export const NotOwnerError = defineContractError(2, 'NotOwner', 'The caller is not the will owner');
+export const WillNotActiveError = defineContractError(
+  3,
+  'WillNotActive',
+  'The will is not active',
+);
+export const WillNotTriggeredError = defineContractError(
+  4,
+  'WillNotTriggered',
+  'The will has not been triggered',
+);
+export const GracePeriodNotExpiredError = defineContractError(
+  5,
+  'GracePeriodNotExpired',
+  'The grace period has not expired',
+);
+export const GracePeriodExpiredError = defineContractError(
+  6,
+  'GracePeriodExpired',
+  'The grace period has expired',
+);
+export const InvalidPercentagesError = defineContractError(
+  7,
+  'InvalidPercentages',
+  'Beneficiary percentages must sum to 100',
+);
+export const AlreadyVotedError = defineContractError(
+  8,
+  'AlreadyVoted',
+  'The guardian has already voted',
+);
+export const NotGuardianError = defineContractError(
+  9,
+  'NotGuardian',
+  'The caller is not a guardian',
+);
+export const CheckinNotDueError = defineContractError(
+  10,
+  'CheckinNotDue',
+  'The check-in deadline has not passed',
+);
+export const ZeroAmountError = defineContractError(
+  11,
+  'ZeroAmount',
+  'The amount must be greater than zero',
+);
+export const TooManyBeneficiariesError = defineContractError(
+  12,
+  'TooManyBeneficiaries',
+  'Too many beneficiaries or guardians were supplied',
+);
+
+const CONTRACT_ERRORS: Readonly<Record<number, ContractErrorConstructor>> = {
+  1: WillNotFoundError,
+  2: NotOwnerError,
+  3: WillNotActiveError,
+  4: WillNotTriggeredError,
+  5: GracePeriodNotExpiredError,
+  6: GracePeriodExpiredError,
+  7: InvalidPercentagesError,
+  8: AlreadyVotedError,
+  9: NotGuardianError,
+  10: CheckinNotDueError,
+  11: ZeroAmountError,
+  12: TooManyBeneficiariesError,
+};
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.message} ${error.cause === undefined ? '' : errorText(error.cause)}`;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+/** Converts a Soroban contract error code embedded in an RPC error into its typed SDK error. */
+export function mapContractError(error: unknown): Error {
+  if (error instanceof WillContractError || error instanceof RequestTimeoutError) {
+    return error;
+  }
+  const text = errorText(error);
+  const match =
+    /Error\(Contract,\s*#?(\d+)\)/i.exec(text) ??
+    /(?:contract error|contracterror|error code)[^\d#]*#?(\d+)/i.exec(text);
+  const codeText = match?.[1];
+  const ErrorClass = codeText === undefined ? undefined : CONTRACT_ERRORS[Number(codeText)];
+  return ErrorClass === undefined ? (error instanceof Error ? error : new SoroWillError(text)) : new ErrorClass({ cause: error });
+}
