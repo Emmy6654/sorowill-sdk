@@ -84,7 +84,32 @@ console.log(will.status, will.balance, will.beneficiaries);
 
 ## Wallet helpers
 
-`isFreighterInstalled()`, `connectWallet()`, `getPublicKey()`, and `signTransaction()` wrap the [Freighter](https://www.freighter.app/) browser extension API used internally by `SoroWillClient` for all state-changing calls.
+`isFreighterInstalled()`, `connectWallet()`, `getPublicKey()`, and `signTransaction()` wrap the [Freighter](https://www.freighter.app/) browser extension API used by the default adapter for all state-changing calls.
+
+## Pluggable wallets
+
+`SoroWillClient` reads the connected account and signs transactions through a small `WalletAdapter` interface, so any Stellar wallet can be used — not just Freighter:
+
+```ts
+interface WalletAdapter {
+  getPublicKey(): Promise<string>;
+  signTransaction(transactionXdr: string, opts: { networkPassphrase: string }): Promise<string>;
+}
+```
+
+If no `wallet` is passed, the client defaults to `freighterAdapter`, so existing code keeps working unchanged. To use [Albedo](https://albedo.link) instead, pass the bundled adapter:
+
+```ts
+import { SoroWillClient, createAlbedoAdapter } from '@sorowill/sdk';
+
+const client = new SoroWillClient({
+  network: 'testnet',
+  contractId: 'C...',
+  wallet: createAlbedoAdapter(),
+});
+```
+
+Supporting another wallet (xBull, Rabet, Lobstr, …) is just a matter of implementing the two `WalletAdapter` methods and passing your object as `wallet`.
 
 ## Local Setup
 
