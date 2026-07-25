@@ -17,7 +17,12 @@ npm install @sorowill/sdk
 ## Quick Start
 
 ```ts
-import { SoroWillClient, connectWallet, toStroops } from '@sorowill/sdk';
+import {
+  LocalStorageCachePersistenceAdapter,
+  SoroWillClient,
+  connectWallet,
+  toStroops,
+} from '@sorowill/sdk';
 
 // Connect the user's Freighter wallet.
 const wallet = await connectWallet();
@@ -26,6 +31,14 @@ const wallet = await connectWallet();
 const client = new SoroWillClient({
   network: 'testnet',
   contractId: 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE',
+  readCache: {
+    ttlMs: 60_000,
+    persistence: new LocalStorageCachePersistenceAdapter(window.localStorage),
+  },
+  retry: {
+    maxAttempts: 3,
+    initialDelayMs: 250,
+  },
 });
 
 // Create a will locking 1,000 USDC, split 60/40 between two beneficiaries,
@@ -85,6 +98,17 @@ console.log(will.status, will.balance, will.beneficiaries);
 ## Wallet helpers
 
 `isFreighterInstalled()`, `connectWallet()`, `getPublicKey()`, and `signTransaction()` wrap the [Freighter](https://www.freighter.app/) browser extension API used internally by `SoroWillClient` for all state-changing calls.
+
+The SDK also exports a shared `WalletAdapter` interface, `FreighterWalletAdapter`, and a generic `WalletConnectAdapter` for WalletConnect-compatible Stellar wallets.
+
+## Cache and persistence
+
+Read methods are cached in memory by default. You can disable caching with `readCache: false`, or persist cached reads across reloads with:
+
+- `LocalStorageCachePersistenceAdapter`
+- `IndexedDbCachePersistenceAdapter`
+
+If you already have a contract event stream, pass it as `eventSource` and cached will reads will be invalidated automatically when matching will events arrive.
 
 ## Local Setup
 
