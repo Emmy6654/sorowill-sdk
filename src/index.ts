@@ -1,7 +1,18 @@
 export { SoroWillClient } from './SoroWillClient';
 export type { SoroWillClientOptions, SoroWillNetwork } from './SoroWillClient';
 
-export type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
+export type {
+  Beneficiary,
+  CreateWillParams,
+  EventSubscription,
+  EventSubscriptionOptions,
+  EventSubscriptionTransport,
+  PaginatedWillsResult,
+  PaginationOptions,
+  SoroWillEvent,
+  UpdateBeneficiariesParams,
+  Will,
+} from './types';
 export { WillStatus } from './types';
 
 export { connectWallet, getPublicKey, isFreighterInstalled, signTransaction } from './wallet';

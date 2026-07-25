@@ -1,0 +1,402 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const freighterApiMock = {
+  getAddress: vi.fn(async () => ({ address: 'GTESTACCOUNT', error: undefined })),
+  requestAccess: vi.fn(),
+  getNetworkDetails: vi.fn(),
+  isConnected: vi.fn(),
+  signTransaction: vi.fn(),
+};
+
+const mockState = {
+  createdServerUrls: [] as string[],
+  getAccount: vi.fn(async (publicKey: string) => ({ accountId: publicKey, sequence: '1' })),
+  getContractWasmByContractId: vi.fn(async () => new Uint8Array()),
+  pollTransaction: vi.fn(),
+  prepareTransaction: vi.fn(async (tx: { toXDR: () => string }) => ({ toXDR: tx.toXDR })),
+  sendTransaction: vi.fn(),
+  simulateTransaction: vi.fn(),
+};
+
+vi.mock('@stellar/freighter-api', () => ({
+  default: freighterApiMock,
+}));
+
+vi.mock('@stellar/stellar-sdk', () => {
+  class MockAccount {
+    constructor(
+      public readonly accountId: string,
+      public readonly sequence: string,
+    ) {}
+  }
+
+  class MockContract {
+    constructor(private readonly id: string) {}
+
+    contractId(): string {
+      return this.id;
+    }
+
+    call(method: string, ...args: unknown[]): { contractId: string; method: string; args: unknown[] } {
+      return { contractId: this.id, method, args };
+    }
+  }
+
+  class MockServer {
+    constructor(public readonly url: string) {
+      mockState.createdServerUrls.push(url);
+    }
+
+    getAccount = mockState.getAccount;
+    getContractWasmByContractId = mockState.getContractWasmByContractId;
+    pollTransaction = mockState.pollTransaction;
+    prepareTransaction = mockState.prepareTransaction;
+    sendTransaction = mockState.sendTransaction;
+    simulateTransaction = mockState.simulateTransaction;
+  }
+
+  class MockTransactionBuilder {
+    private operation: unknown;
+
+    constructor(
+      private readonly account: MockAccount,
+      private readonly options: { fee: string; networkPassphrase: string },
+    ) {}
+
+    addOperation(operation: unknown): this {
+      this.operation = operation;
+      return this;
+    }
+
+    setTimeout(_timeout: number): this {
+      return this;
+    }
+
+    build(): {
+      source: string;
+      fee: string;
+      networkPassphrase: string;
+      operation: unknown;
+      toXDR: () => string;
+    } {
+      return {
+        source: this.account.accountId,
+        fee: this.options.fee,
+        networkPassphrase: this.options.networkPassphrase,
+        operation: this.operation,
+        toXDR: () => 'TX_XDR',
+      };
+    }
+
+    static fromXDR(xdr: string, networkPassphrase: string): { xdr: string; networkPassphrase: string } {
+      return { xdr, networkPassphrase };
+    }
+  }
+
+  return {
+    Account: MockAccount,
+    BASE_FEE: '100',
+    Contract: MockContract,
+    Networks: {
+      PUBLIC: 'PUBLIC',
+      TESTNET: 'TESTNET',
+    },
+    Transaction: class MockTransaction {},
+    TransactionBuilder: MockTransactionBuilder,
+    contract: {
+      Spec: {
+        fromWasm: () => ({
+          funcArgsToScVals: (_method: string, args: Record<string, unknown>) => [args],
+          funcResToNative: (_method: string, value: unknown) => value,
+        }),
+      },
+    },
+    rpc: {
+      Api: {
+        GetTransactionStatus: {
+          SUCCESS: 'SUCCESS',
+        },
+        isSimulationError: (simulation: { error?: string }) => Boolean(simulation.error),
+      },
+      Server: MockServer,
+    },
+    xdr: {},
+  };
+});
+
+import { SoroWillClient } from '../src/SoroWillClient';
+import { WillStatus, type EventSubscription, type SoroWillEvent } from '../src/types';
+
+function rawWill(id: number): {
+  balance: bigint;
+  beneficiaries: Array<{ address: string; percentage: number }>;
+  checkin_period_days: bigint;
+  grace_period_days: bigint;
+  guardian_votes: number;
+  guardians: string[];
+  id: bigint;
+  last_checkin: bigint;
+  owner: string;
+  status: WillStatus;
+  token: string;
+  trigger_time: bigint | undefined;
+} {
+  return {
+    id: BigInt(id),
+    owner: `GOWNER${id}`,
+    token: `CTOKEN${id}`,
+    balance: 1_000_000n * BigInt(id),
+    beneficiaries: [{ address: `GBEN${id}`, percentage: 100 }],
+    checkin_period_days: 90n,
+    grace_period_days: 7n,
+    last_checkin: 1_700_000_000n,
+    trigger_time: undefined,
+    status: WillStatus.Active,
+    guardians: [],
+    guardian_votes: 0,
+  };
+}
+
+describe('SoroWillClient', () => {
+  beforeEach(() => {
+    mockState.createdServerUrls.length = 0;
+    mockState.getAccount.mockClear();
+    mockState.getContractWasmByContractId.mockClear();
+    mockState.pollTransaction.mockReset();
+    mockState.prepareTransaction.mockClear();
+    mockState.sendTransaction.mockReset();
+    mockState.simulateTransaction.mockReset();
+    freighterApiMock.getAddress.mockClear();
+  });
+
+  it('constructs from environment variables', () => {
+    const client = SoroWillClient.fromEnv({
+      SOROWILL_NETWORK: 'mainnet',
+      SOROWILL_CONTRACT_ID: 'CCONTRACT',
+      SOROWILL_RPC_URL: 'https://rpc.example',
+      SOROWILL_EVENT_RPC_URL: 'https://rpc-events.example',
+      SOROWILL_EVENT_STREAM_URL: 'wss://stream.example/events',
+      SOROWILL_EVENTS_POLL_INTERVAL_MS: '2500',
+    });
+
+    expect(client).toBeInstanceOf(SoroWillClient);
+    expect(mockState.createdServerUrls).toContain('https://rpc.example');
+    expect((client as unknown as { eventRpcUrl: string }).eventRpcUrl).toBe('https://rpc-events.example');
+    expect((client as unknown as { eventStreamUrl: string }).eventStreamUrl).toBe('wss://stream.example/events');
+  });
+
+  it('supports client-side pagination for owner listings across multiple pages', async () => {
+    mockState.simulateTransaction.mockResolvedValue({
+      result: { retval: [rawWill(1), rawWill(2), rawWill(3)] },
+    });
+
+    const client = new SoroWillClient({ network: 'testnet', contractId: 'CCONTRACT' });
+    const firstPage = await client.getWillsByOwner('GOWNER', { pageSize: 2 });
+    const secondPage = await client.getWillsByOwner('GOWNER', {
+      pageSize: 2,
+      cursor: firstPage.nextCursor ?? undefined,
+    });
+
+    expect(firstPage.wills.map((will) => will.id)).toEqual(['1', '2']);
+    expect(firstPage.nextCursor).toBe('2');
+    expect(secondPage.wills.map((will) => will.id)).toEqual(['3']);
+    expect(secondPage.nextCursor).toBeNull();
+  });
+
+  it('supports client-side pagination for beneficiary listings across multiple pages', async () => {
+    mockState.simulateTransaction.mockResolvedValue({
+      result: { retval: [rawWill(4), rawWill(5), rawWill(6)] },
+    });
+
+    const client = new SoroWillClient({ network: 'testnet', contractId: 'CCONTRACT' });
+    const firstPage = await client.getWillsByBeneficiary('GBEN', { pageSize: 1 });
+    const secondPage = await client.getWillsByBeneficiary('GBEN', {
+      pageSize: 1,
+      cursor: firstPage.nextCursor ?? undefined,
+    });
+
+    expect(firstPage.wills.map((will) => will.id)).toEqual(['4']);
+    expect(firstPage.nextCursor).toBe('1');
+    expect(secondPage.wills.map((will) => will.id)).toEqual(['5']);
+    expect(secondPage.nextCursor).toBe('2');
+  });
+
+  it('previews Soroban resource fees for create_will and top_up without submitting', async () => {
+    mockState.simulateTransaction.mockImplementation(async (tx: { operation: { method: string } }) => ({
+      minResourceFee: tx.operation.method === 'create_will' ? '1500' : '2750',
+      result: { retval: undefined },
+    }));
+
+    const client = new SoroWillClient({ network: 'testnet', contractId: 'CCONTRACT' });
+
+    await expect(
+      client.previewFee('create_will', {
+        owner: 'GTESTACCOUNT',
+        token: 'CTOKEN',
+        amount: 1000n,
+      }),
+    ).resolves.toEqual({ resourceFee: '1500' });
+
+    await expect(
+      client.previewFee('top_up', {
+        will_id: 1n,
+        owner: 'GTESTACCOUNT',
+        amount: 500n,
+      }),
+    ).resolves.toEqual({ resourceFee: '2750' });
+
+    expect(mockState.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('subscribes to events over polling transport', async () => {
+    const seen: SoroWillEvent[] = [];
+    let subscription: EventSubscription | undefined;
+
+    const fetchMock = vi.fn(async () => ({
+      json: async () => ({
+        result: {
+          events: [
+            {
+              id: 'evt-1',
+              pagingToken: '1',
+              ledger: 123,
+              contractId: 'CCONTRACT',
+              txHash: 'abc',
+              type: 'contract',
+              topics: ['will_created'],
+              value: { will_id: '1' },
+            },
+          ],
+          nextCursor: '1',
+        },
+      }),
+    }));
+
+    const client = new SoroWillClient({
+      network: 'testnet',
+      contractId: 'CCONTRACT',
+      fetch: fetchMock as unknown as typeof fetch,
+      defaultPollIntervalMs: 1,
+    });
+
+    subscription = await client.subscribeToEvents(
+      (event) => {
+        seen.push(event);
+        subscription?.close();
+      },
+      { transport: 'polling', pollIntervalMs: 1 },
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(subscription.transport).toBe('polling');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(seen.map((event) => event.id)).toEqual(['evt-1']);
+  });
+
+  it('subscribes to events over WebSocket transport and falls back to polling when streaming is unavailable', async () => {
+    const websocketEvents: SoroWillEvent[] = [];
+    const fallbackEvents: SoroWillEvent[] = [];
+
+    const webSocketFactory = vi.fn((url: string) => {
+      const socket = {
+        close: vi.fn(),
+        onclose: null,
+        onerror: null,
+        onmessage: null,
+        onopen: null,
+        send: vi.fn(() => {
+          queueMicrotask(() => {
+            socket.onmessage?.({
+              data: JSON.stringify({
+                result: {
+                  events: [
+                    {
+                      id: 'evt-ws-1',
+                      pagingToken: '5',
+                      ledger: 200,
+                      contractId: 'CCONTRACT',
+                      type: 'contract',
+                      topics: ['checked_in'],
+                      value: { will_id: '10' },
+                    },
+                  ],
+                },
+              }),
+            });
+          });
+        }),
+      };
+
+      queueMicrotask(() => {
+        if (url.includes('unsupported')) {
+          socket.onerror?.(new Event('error'));
+          return;
+        }
+        socket.onopen?.(new Event('open'));
+      });
+
+      return socket;
+    });
+
+    const fallbackFetch = vi.fn(async () => ({
+      json: async () => ({
+        result: {
+          events: [
+            {
+              id: 'evt-poll-1',
+              pagingToken: '6',
+              ledger: 201,
+              contractId: 'CCONTRACT',
+              type: 'contract',
+              topics: ['guardian_triggered'],
+              value: { will_id: '11' },
+            },
+          ],
+          nextCursor: '6',
+        },
+      }),
+    }));
+
+    const wsClient = new SoroWillClient({
+      network: 'testnet',
+      contractId: 'CCONTRACT',
+      webSocketFactory,
+      eventStreamUrl: 'wss://stream.example/events',
+    });
+
+    const wsSubscription = await wsClient.subscribeToEvents((event) => {
+      websocketEvents.push(event);
+    }, { transport: 'websocket' });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(wsSubscription.transport).toBe('websocket');
+    expect(websocketEvents.map((event) => event.id)).toEqual(['evt-ws-1']);
+
+    let fallbackSubscription: EventSubscription | undefined;
+    const fallbackClient = new SoroWillClient({
+      network: 'testnet',
+      contractId: 'CCONTRACT',
+      eventStreamUrl: 'wss://unsupported.example/events',
+      fetch: fallbackFetch as unknown as typeof fetch,
+      webSocketFactory,
+      defaultPollIntervalMs: 1,
+    });
+
+    fallbackSubscription = await fallbackClient.subscribeToEvents((event) => {
+      fallbackEvents.push(event);
+      fallbackSubscription?.close();
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fallbackSubscription.transport).toBe('polling');
+    expect(fallbackFetch).toHaveBeenCalledTimes(1);
+    expect(fallbackEvents.map((event) => event.id)).toEqual(['evt-poll-1']);
+  });
+});

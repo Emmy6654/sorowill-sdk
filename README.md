@@ -28,6 +28,11 @@ const client = new SoroWillClient({
   contractId: 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE',
 });
 
+// Or construct from environment variables in Node-based apps:
+// SOROWILL_NETWORK=testnet
+// SOROWILL_CONTRACT_ID=CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE
+// const client = SoroWillClient.fromEnv();
+
 // Create a will locking 1,000 USDC, split 60/40 between two beneficiaries,
 // with a 90-day check-in period and a 7-day grace period.
 const { willId, txHash } = await client.createWill({
@@ -65,10 +70,62 @@ console.log(will.status, will.balance, will.beneficiaries);
 | `cancelWill` | Withdraws the full balance and closes the will | `willId` | `Promise<{ txHash, refundAmount }>` |
 | `updateBeneficiaries` | Replaces the beneficiary list before the will is triggered | `UpdateBeneficiariesParams` | `Promise<{ txHash }>` |
 | `topUp` | Adds more of the token to an existing will | `willId`, `amount` | `Promise<{ txHash }>` |
+| `previewFee` | Simulates a state-changing method and returns its estimated Soroban resource fee | `method`, `params` | `Promise<{ resourceFee }>` |
 | `getWill` | Reads the full state of a will (no wallet required) | `willId` | `Promise<Will>` |
-| `getWillsByOwner` | Lists every will owned by an address (no wallet required) | `owner` | `Promise<Will[]>` |
-| `getWillsByBeneficiary` | Lists every will an address is named in (no wallet required) | `beneficiary` | `Promise<Will[]>` |
+| `getWillsByOwner` | Lists every will owned by an address, with optional client-side pagination | `owner`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
+| `getWillsByBeneficiary` | Lists every will an address is named in, with optional client-side pagination | `beneficiary`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
 | `guardianTrigger` | Casts a guardian vote; 2 of 3 forces an early release | `willId` | `Promise<{ txHash }>` |
+| `subscribeToEvents` | Subscribes to contract events via WebSocket with polling fallback | `onEvent`, `EventSubscriptionOptions?` | `Promise<EventSubscription>` |
+
+## Environment-based configuration
+
+`SoroWillClient.fromEnv()` reads the following variables:
+
+- `SOROWILL_NETWORK` — required, `testnet` or `mainnet`
+- `SOROWILL_CONTRACT_ID` — required, deployed SoroWill contract ID
+- `SOROWILL_RPC_URL` — optional RPC override
+- `SOROWILL_NETWORK_PASSPHRASE` — optional network passphrase override
+- `SOROWILL_EVENT_RPC_URL` — optional separate RPC endpoint for event polling
+- `SOROWILL_EVENT_STREAM_URL` — optional WebSocket endpoint for event streaming
+- `SOROWILL_EVENTS_POLL_INTERVAL_MS` — optional default polling interval override
+
+## Pagination
+
+Both `getWillsByOwner` and `getWillsByBeneficiary` now support optional client-side windowing:
+
+```ts
+const firstPage = await client.getWillsByOwner('GOWNER...', { pageSize: 10 });
+if (!Array.isArray(firstPage)) {
+  console.log(firstPage.wills, firstPage.nextCursor);
+}
+```
+
+When pagination options are omitted, these methods continue returning the full `Will[]`.
+
+## Fee preview
+
+Use `previewFee()` to simulate a write method and show an estimated Soroban resource fee before asking the user to sign:
+
+```ts
+const { resourceFee } = await client.previewFee('top_up', {
+  will_id: 1n,
+  owner: 'GOWNER...',
+  amount: 5000000n,
+});
+```
+
+## Event subscriptions
+
+Use `subscribeToEvents()` to receive lower-latency contract events when the configured endpoint supports WebSocket streaming. In the default `auto` mode, the SDK falls back to polling automatically if streaming is unavailable.
+
+```ts
+const subscription = await client.subscribeToEvents((event) => {
+  console.log(event.type, event.topics, event.value);
+});
+
+// Later:
+subscription.close();
+```
 
 ## Utilities
 
