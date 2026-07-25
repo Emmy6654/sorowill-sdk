@@ -8,6 +8,14 @@ export { connectWallet, getPublicKey, isFreighterInstalled, signTransaction } fr
 export type { WalletConnection } from './wallet';
 
 export {
+  connectAlbedo,
+  connectAlbedoWithNetwork,
+  getAlbedoPublicKey,
+  signAlbedoTransaction,
+} from './albedo';
+export type { AlbedoWalletConnection } from './albedo';
+
+export {
   calculateShares,
   formatDeadline,
   formatUSDC,
