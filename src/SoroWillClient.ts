@@ -725,10 +725,9 @@ export class SoroWillClient {
       }
 
       if (sendResponse.status === 'DUPLICATE') {
-        // The transaction was already submitted (or is still in the mempool).
+        // The transaction was already submitted (or still in the mempool).
         // We can still poll for its final status using the returned hash.
-        // Emit a distinct warning so callers are aware.
-        // We fall through to polling below.
+        // Fall through to polling below.
       }
 
       // PENDING and DUPLICATE both proceed to polling.
