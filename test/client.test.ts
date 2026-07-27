@@ -1,5 +1,10 @@
+import { Account, Networks, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
 import { describe, expect, it } from 'vitest';
 
+import { ReadCache } from '../src/cache';
+import { RpcEndpointPool } from '../src/rpc';
+import { buildSep7TxUri, parseSep7Callback } from '../src/sep7';
+import { assertPreparedTransactionMatchesIntendedOperation } from '../src/txValidation';
 import {
   calculateShares,
   formatDeadline,
@@ -49,9 +54,6 @@ describe('toStroops', () => {
   });
 
   it('round-trips with formatUSDC at cents precision', () => {
-    // formatUSDC only displays 2 decimal places, so only amounts that are
-    // exact multiples of one cent (10^5 stroops, since USDC uses 7 decimals)
-    // survive a display-and-reparse round trip without loss.
     const original = 9_876_500_000n;
     expect(toStroops(formatUSDC(original))).toBe(original);
   });
@@ -118,7 +120,7 @@ describe('calculateShares', () => {
       { address: 'GBEN_B', percentage: 33 },
       { address: 'GBEN_C', percentage: 34 },
     ]);
-    const total = shares.reduce((sum, s) => sum + BigInt(s.share), 0n);
+    const total = shares.reduce((sum, share) => sum + BigInt(share.share), 0n);
     expect(total).toBe(100n);
     expect(shares[2]?.share).toBe('34');
   });
@@ -239,5 +241,124 @@ describe('HookManager', () => {
     const ctx: AfterInvokeContext = { method: 'test', args: { a: 1 }, timestamp: '', txHash: 'abc', error: null, durationMs: 42 };
     await hm.runAfterInvoke(ctx);
     expect(captured).toBe(ctx);
+describe('ReadCache', () => {
+  it('returns cached values before expiry', () => {
+    let now = 1_000;
+    const cache = new ReadCache({ ttlMs: 500, now: () => now });
+
+    expect(cache.get('will:1')).toBeUndefined();
+
+    cache.set('will:1', { id: '1' });
+    expect(cache.get<{ id: string }>('will:1')).toEqual({ id: '1' });
+
+    now = 1_400;
+    expect(cache.get<{ id: string }>('will:1')).toEqual({ id: '1' });
+  });
+
+  it('expires cached values after the ttl', () => {
+    let now = 1_000;
+    const cache = new ReadCache({ ttlMs: 500, now: () => now });
+
+    cache.set('owner:GABC', ['1']);
+    now = 1_501;
+
+    expect(cache.get<string[]>('owner:GABC')).toBeUndefined();
+  });
+});
+
+describe('RpcEndpointPool', () => {
+  it('fails over to the next endpoint on a connection error', async () => {
+    const pool = new RpcEndpointPool(['https://rpc-a.example', 'https://rpc-b.example']);
+    const attempts: string[] = [];
+
+    const result = await pool.withFailover(async (_server, rpcUrl) => {
+      attempts.push(rpcUrl);
+      if (rpcUrl.endsWith('rpc-a.example')) {
+        throw new Error('fetch failed');
+      }
+      return 'ok';
+    });
+
+    expect(result).toBe('ok');
+    expect(attempts).toEqual(['https://rpc-a.example', 'https://rpc-b.example']);
+    expect(pool.getActiveRpcUrl()).toBe('https://rpc-b.example');
+  });
+
+  it('does not fail over on non-connection errors', async () => {
+    const pool = new RpcEndpointPool(['https://rpc-a.example', 'https://rpc-b.example']);
+
+    await expect(
+      pool.withFailover(async () => {
+        throw new Error('contract execution failed');
+      }),
+    ).rejects.toThrow('contract execution failed');
+  });
+});
+
+describe('SEP-7 helpers', () => {
+  it('builds a valid tx deep-link uri', () => {
+    const uri = buildSep7TxUri('AAAA', {
+      callbackUrl: 'https://example.com/callback',
+      message: 'Sign this will operation',
+      networkPassphrase: Networks.TESTNET,
+    });
+
+    expect(uri).toContain('web+stellar:tx?');
+    expect(uri).toContain('xdr=AAAA');
+    expect(uri).toContain('callback=https%3A%2F%2Fexample.com%2Fcallback');
+    expect(uri).toContain('msg=Sign+this+will+operation');
+  });
+
+  it('parses a callback url carrying a signed xdr result', () => {
+    const result = parseSep7Callback(
+      'https://example.com/callback?xdr=SIGNED123&pubkey=GABC&status=success',
+    );
+
+    expect(result).toEqual({
+      transactionXdr: 'SIGNED123',
+      signerAddress: 'GABC',
+      status: 'success',
+      message: undefined,
+    });
+  });
+});
+
+describe('pre-sign XDR validation', () => {
+  function buildManageDataTx(name: string) {
+    const account = new Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', '1');
+    return new TransactionBuilder(account, {
+      fee: '100',
+      networkPassphrase: Networks.TESTNET,
+    })
+      .addOperation(Operation.manageData({ name, value: 'payload' }))
+      .setTimeout(30)
+      .build();
+  }
+
+  it('accepts a prepared transaction when the decoded operation matches', () => {
+    const tx = buildManageDataTx('sorowill');
+
+    expect(() =>
+      assertPreparedTransactionMatchesIntendedOperation({
+        intendedTransactionXdr: tx.toXDR(),
+        preparedTransactionXdr: tx.toXDR(),
+        networkPassphrase: Networks.TESTNET,
+        context: 'manage_data',
+      }),
+    ).not.toThrow();
+  });
+
+  it('throws when the decoded operation does not match the intended one', () => {
+    const intendedTx = buildManageDataTx('sorowill');
+    const mismatchedTx = buildManageDataTx('tampered');
+
+    expect(() =>
+      assertPreparedTransactionMatchesIntendedOperation({
+        intendedTransactionXdr: intendedTx.toXDR(),
+        preparedTransactionXdr: mismatchedTx.toXDR(),
+        networkPassphrase: Networks.TESTNET,
+        context: 'manage_data',
+      }),
+    ).toThrow('did not match the intended operation');
   });
 });

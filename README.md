@@ -17,7 +17,12 @@ npm install @sorowill/sdk
 ## Quick Start
 
 ```ts
-import { SoroWillClient, connectWallet, toStroops } from '@sorowill/sdk';
+import {
+  LocalStorageCachePersistenceAdapter,
+  SoroWillClient,
+  connectWallet,
+  toStroops,
+} from '@sorowill/sdk';
 
 // Connect the user's Freighter wallet.
 const wallet = await connectWallet();
@@ -26,7 +31,23 @@ const wallet = await connectWallet();
 const client = new SoroWillClient({
   network: 'testnet',
   contractId: 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE',
+  readCache: {
+    ttlMs: 60_000,
+    persistence: new LocalStorageCachePersistenceAdapter(window.localStorage),
+  },
+  retry: {
+    maxAttempts: 3,
+    initialDelayMs: 250,
+  },
+  timeoutMs: 15_000,
+  maxConcurrentRequests: 4,
+  requestsPerSecond: 10,
 });
+
+// Or construct from environment variables in Node-based apps:
+// SOROWILL_NETWORK=testnet
+// SOROWILL_CONTRACT_ID=CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE
+// const client = SoroWillClient.fromEnv();
 
 // Create a will locking 1,000 USDC, split 60/40 between two beneficiaries,
 // with a 90-day check-in period and a 7-day grace period.
@@ -65,10 +86,53 @@ console.log(will.status, will.balance, will.beneficiaries);
 | `cancelWill` | Withdraws the full balance and closes the will | `willId` | `Promise<{ txHash, refundAmount }>` |
 | `updateBeneficiaries` | Replaces the beneficiary list before the will is triggered | `UpdateBeneficiariesParams` | `Promise<{ txHash }>` |
 | `topUp` | Adds more of the token to an existing will | `willId`, `amount` | `Promise<{ txHash }>` |
+| `previewFee` | Simulates a state-changing method and returns its estimated Soroban resource fee | `method`, `params` | `Promise<{ resourceFee }>` |
 | `getWill` | Reads the full state of a will (no wallet required) | `willId` | `Promise<Will>` |
-| `getWillsByOwner` | Lists every will owned by an address (no wallet required) | `owner` | `Promise<Will[]>` |
-| `getWillsByBeneficiary` | Lists every will an address is named in (no wallet required) | `beneficiary` | `Promise<Will[]>` |
+| `getWillsByOwner` | Lists every will owned by an address, with optional client-side pagination | `owner`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
+| `getWillsByBeneficiary` | Lists every will an address is named in, with optional client-side pagination | `beneficiary`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
 | `guardianTrigger` | Casts a guardian vote; 2 of 3 forces an early release | `willId` | `Promise<{ txHash }>` |
+| `batch` | Simulates, signs, and submits multiple contract operations atomically | `BatchOperation[]` | `Promise<BatchResult>` |
+
+Every method also accepts an optional final `{ timeoutMs }` argument. RPC work flows through a
+shared FIFO queue configured by `maxConcurrentRequests` and `requestsPerSecond`, preventing bursts
+of reads or writes from overwhelming a public endpoint. A timeout rejects with
+`RequestTimeoutError`.
+
+## Batch transactions
+
+`batch` combines native contract calls into one Stellar transaction and therefore one Freighter
+signature prompt:
+
+```ts
+const result = await client.batch([
+  {
+    method: 'create_will',
+    args: {
+      owner: wallet.publicKey,
+      token: 'CBIEL...DAMA',
+      amount: 10_000_000n,
+      beneficiaries: [{ address: 'GBEN...AAAA', percentage: 100 }],
+      checkin_period_days: 90n,
+      grace_period_days: 7n,
+      guardians: [],
+    },
+  },
+  {
+    method: 'check_in',
+    args: { will_id: 1n, owner: wallet.publicKey },
+  },
+]);
+```
+
+The whole batch is simulated and assembled together, signed once, and submitted atomically.
+
+## Typed errors
+
+Contract failures are exposed as subclasses of `WillContractError`, including
+`WillNotFoundError`, `NotOwnerError`, `WillNotActiveError`, `WillNotTriggeredError`,
+`GracePeriodNotExpiredError`, `GracePeriodExpiredError`, `InvalidPercentagesError`,
+`AlreadyVotedError`, `NotGuardianError`, `CheckinNotDueError`, `ZeroAmountError`, and
+`TooManyBeneficiariesError`.
 
 ## Utilities
 
@@ -84,7 +148,98 @@ console.log(will.status, will.balance, will.beneficiaries);
 
 ## Wallet helpers
 
-`isFreighterInstalled()`, `connectWallet()`, `getPublicKey()`, and `signTransaction()` wrap the [Freighter](https://www.freighter.app/) browser extension API used internally by `SoroWillClient` for all state-changing calls.
+`isFreighterInstalled()`, `connectWallet()`, `getPublicKey()`, and `signTransaction()` wrap the [Freighter](https://www.freighter.app/) browser extension API used by the default adapter for all state-changing calls.
+
+## Pluggable wallets
+
+`SoroWillClient` reads the connected account and signs transactions through a small `WalletAdapter` interface, so any Stellar wallet can be used — not just Freighter:
+
+```ts
+interface WalletAdapter {
+  getPublicKey(): Promise<string>;
+  signTransaction(transactionXdr: string, opts: { networkPassphrase: string }): Promise<string>;
+}
+```
+
+If no `wallet` is passed, the client defaults to `freighterAdapter`, so existing code keeps working unchanged. To use [Albedo](https://albedo.link) instead, pass the bundled adapter:
+
+```ts
+import { SoroWillClient, createAlbedoAdapter } from '@sorowill/sdk';
+
+const client = new SoroWillClient({
+  network: 'testnet',
+  contractId: 'C...',
+  wallet: createAlbedoAdapter(),
+});
+```
+
+Supporting another wallet (xBull, Rabet, Lobstr, …) is just a matter of implementing the two `WalletAdapter` methods and passing your object as `wallet`.
+
+## Wallet adapters
+
+All adapters implement `WalletAdapter`, whose `connect`, `disconnect`,
+`isConnected`, `getPublicKey`, and `signTransaction` methods make it possible
+to switch wallets without changing application transaction code.
+
+```ts
+import { HanaWalletAdapter, HotWalletAdapter } from '@sorowill/sdk';
+
+const hana = new HanaWalletAdapter(hanaProvider);
+const hot = new HotWalletAdapter(hotProvider);
+const connection = await hana.connect();
+```
+
+Hana and HOT accept injected providers. Explicit injection supports browser
+extensions, embedded webviews, and mini-app environments while keeping wallet
+permissions under the host application's control.
+
+### Pairing LOBSTR
+
+LOBSTR is primarily a mobile wallet, so `LobstrWalletAdapter` accepts a
+WalletConnect-compatible session client. Calling `connect()` creates a pairing
+and reports its URI through `onPairingUri`; desktop applications should render
+that URI as a QR code. Applications may also use `openDeepLink` to open the
+generated `lobstr://wallet-connect?uri=...` link on the same mobile device.
+`connect()` resolves only after LOBSTR approves the session.
+
+```ts
+const lobstr = new LobstrWalletAdapter({
+  client: walletConnectSession,
+  onPairingUri: (uri) => showQrCode(uri),
+  openDeepLink: (link) => window.location.assign(link),
+});
+await lobstr.connect();
+```
+
+### Connecting Ledger
+
+Create a Ledger transport appropriate to the environment (WebUSB, WebHID, or
+Node) and pass it to `LedgerWalletAdapter`. The default Stellar derivation path
+is `44'/148'/0'`. `signTransaction()` sends the transaction signature base to
+the Stellar app and remains pending while the device displays the confirmation
+screen; it resolves with signed XDR only after the user physically approves.
+
+```ts
+const ledger = new LedgerWalletAdapter({
+  transport,
+  network: 'testnet',
+  networkPassphrase: Networks.TESTNET,
+});
+await ledger.connect();
+const signedXdr = await ledger.signTransaction(unsignedXdr, {
+  networkPassphrase: Networks.TESTNET,
+});
+```
+The SDK also exports a shared `WalletAdapter` interface, `FreighterWalletAdapter`, and a generic `WalletConnectAdapter` for WalletConnect-compatible Stellar wallets.
+
+## Cache and persistence
+
+Read methods are cached in memory by default. You can disable caching with `readCache: false`, or persist cached reads across reloads with:
+
+- `LocalStorageCachePersistenceAdapter`
+- `IndexedDbCachePersistenceAdapter`
+
+If you already have a contract event stream, pass it as `eventSource` and cached will reads will be invalidated automatically when matching will events arrive.
 
 ## Local Setup
 
