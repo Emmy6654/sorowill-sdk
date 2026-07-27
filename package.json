@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@ledgerhq/hw-app-str": "^7.7.6",
+    "@albedo-link/intent": "0.13.0",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^16.0.1"
   },
