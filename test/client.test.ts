@@ -10,6 +10,8 @@ import {
   validateBeneficiaries,
 } from '../src/utils';
 import { WillStatus, type Will } from '../src/types';
+import { HookManager } from '../src/hooks';
+import type { AfterInvokeContext } from '../src/hooks';
 
 describe('formatUSDC', () => {
   it('formats whole numbers with two decimal places', () => {
@@ -160,5 +162,82 @@ describe('validateBeneficiaries', () => {
         { address: 'GBEN_B', percentage: 0 },
       ]),
     ).toBe(false);
+  });
+});
+
+describe('HookManager', () => {
+  it('registers and counts beforeInvoke hooks', () => {
+    const hm = new HookManager();
+    expect(hm.beforeInvokeCount).toBe(0);
+    hm.onBeforeInvoke(() => {});
+    hm.onBeforeInvoke(() => {});
+    expect(hm.beforeInvokeCount).toBe(2);
+  });
+
+  it('registers and counts afterInvoke hooks', () => {
+    const hm = new HookManager();
+    hm.onAfterInvoke(() => {});
+    expect(hm.afterInvokeCount).toBe(1);
+  });
+
+  it('runs beforeInvoke hooks in order and returns true when none abort', async () => {
+    const hm = new HookManager();
+    const calls: string[] = [];
+    hm.onBeforeInvoke(async () => { calls.push('a'); });
+    hm.onBeforeInvoke(async () => { calls.push('b'); });
+    const proceed = await hm.runBeforeInvoke({ method: 'test', args: {}, timestamp: '' });
+    expect(proceed).toBe(true);
+    expect(calls).toEqual(['a', 'b']);
+  });
+
+  it('aborts when a beforeInvoke hook returns false', async () => {
+    const hm = new HookManager();
+    const calls: string[] = [];
+    hm.onBeforeInvoke(async () => { calls.push('a'); });
+    hm.onBeforeInvoke(async () => { calls.push('b'); return false; });
+    hm.onBeforeInvoke(async () => { calls.push('c'); });
+    const proceed = await hm.runBeforeInvoke({ method: 'test', args: {}, timestamp: '' });
+    expect(proceed).toBe(false);
+    expect(calls).toEqual(['a', 'b']);
+  });
+
+  it('offBeforeInvoke removes a specific hook', async () => {
+    const hm = new HookManager();
+    const calls: string[] = [];
+    const hook = async () => { calls.push('x'); };
+    hm.onBeforeInvoke(hook);
+    hm.onBeforeInvoke(async () => { calls.push('y'); });
+    hm.offBeforeInvoke(hook);
+    await hm.runBeforeInvoke({ method: 'test', args: {}, timestamp: '' });
+    expect(calls).toEqual(['y']);
+    expect(hm.beforeInvokeCount).toBe(1);
+  });
+
+  it('offAfterInvoke removes a specific hook', () => {
+    const hm = new HookManager();
+    const hook = () => {};
+    hm.onAfterInvoke(hook);
+    hm.onAfterInvoke(() => {});
+    hm.offAfterInvoke(hook);
+    expect(hm.afterInvokeCount).toBe(1);
+  });
+
+  it('clear removes all hooks', () => {
+    const hm = new HookManager();
+    hm.onBeforeInvoke(() => {});
+    hm.onAfterInvoke(() => {});
+    hm.onAfterInvoke(() => {});
+    hm.clear();
+    expect(hm.beforeInvokeCount).toBe(0);
+    expect(hm.afterInvokeCount).toBe(0);
+  });
+
+  it('runs afterInvoke hooks with context', async () => {
+    const hm = new HookManager();
+    let captured: AfterInvokeContext | null = null;
+    hm.onAfterInvoke((ctx: AfterInvokeContext) => { captured = ctx; });
+    const ctx: AfterInvokeContext = { method: 'test', args: { a: 1 }, timestamp: '', txHash: 'abc', error: null, durationMs: 42 };
+    await hm.runAfterInvoke(ctx);
+    expect(captured).toBe(ctx);
   });
 });

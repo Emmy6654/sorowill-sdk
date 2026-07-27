@@ -15,6 +15,8 @@ type ScVal = xdr.ScVal;
 import { getPublicKey, signTransaction } from './wallet';
 import type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
 import { WillStatus } from './types';
+import { HookManager } from './hooks';
+import type { BeforeInvokeContext, AfterInvokeContext } from './hooks';
 
 const { Spec } = stellarContract;
 
@@ -46,6 +48,8 @@ export interface SoroWillClientOptions {
   network: SoroWillNetwork;
   /** The deployed SoroWill contract's address. */
   contractId: string;
+  /** Optional hook manager for intercepting contract calls. */
+  hooks?: HookManager;
 }
 
 /** The raw, snake_case shape of a `Will` as decoded straight off the contract spec. */
@@ -92,6 +96,7 @@ export class SoroWillClient {
   private readonly server: rpc.Server;
   private readonly contract: Contract;
   private readonly networkPassphrase: string;
+  private readonly hooks: HookManager;
   private specPromise: Promise<InstanceType<typeof Spec>> | undefined;
 
   constructor(options: SoroWillClientOptions) {
@@ -99,6 +104,7 @@ export class SoroWillClient {
     this.server = new rpc.Server(config.rpcUrl, { allowHttp: config.rpcUrl.startsWith('http://') });
     this.contract = new Contract(options.contractId);
     this.networkPassphrase = config.networkPassphrase;
+    this.hooks = options.hooks ?? new HookManager();
   }
 
   /** Locks `params.amount` of `params.token` and creates a new will. */
@@ -260,40 +266,83 @@ export class SoroWillClient {
     method: string,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string; createdAt: number; returnValue: ScVal | undefined }> {
-    const spec = await this.getSpec();
-    const scArgs = spec.funcArgsToScVals(method, args);
-    const operation = this.contract.call(method, ...scArgs);
-
-    const publicKey = await getPublicKey();
-    const account = await this.server.getAccount(publicKey);
-    const builtTx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(operation)
-      .setTimeout(30)
-      .build();
-
-    const prepared = await this.server.prepareTransaction(builtTx);
-    const signedTxXdr = await signTransaction(prepared.toXDR(), {
-      networkPassphrase: this.networkPassphrase,
-    });
-    const signedTx = TransactionBuilder.fromXDR(signedTxXdr, this.networkPassphrase) as Transaction;
-
-    const sendResponse = await this.server.sendTransaction(signedTx);
-    if (sendResponse.status === 'ERROR') {
-      throw new Error(`SoroWill transaction submission failed for ${method}`);
-    }
-
-    const txResponse = await this.server.pollTransaction(sendResponse.hash, { attempts: 30 });
-    if (txResponse.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
-      throw new Error(`SoroWill transaction for ${method} did not succeed: ${txResponse.status}`);
-    }
-
-    return {
-      txHash: sendResponse.hash,
-      createdAt: txResponse.createdAt,
-      returnValue: txResponse.returnValue,
+    const beforeCtx: BeforeInvokeContext = {
+      method,
+      args,
+      timestamp: new Date().toISOString(),
     };
+    const proceed = await this.hooks.runBeforeInvoke(beforeCtx);
+    if (!proceed) {
+      throw new Error(`SoroWill invocation aborted by beforeInvoke hook for ${method}`);
+    }
+
+    const startTime = Date.now();
+    let txHash: string | null = null;
+    let error: string | null = null;
+
+    try {
+      const spec = await this.getSpec();
+      const scArgs = spec.funcArgsToScVals(method, args);
+      const operation = this.contract.call(method, ...scArgs);
+
+      const publicKey = await getPublicKey();
+      const account = await this.server.getAccount(publicKey);
+      const builtTx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
+
+      const prepared = await this.server.prepareTransaction(builtTx);
+      const signedTxXdr = await signTransaction(prepared.toXDR(), {
+        networkPassphrase: this.networkPassphrase,
+      });
+      const signedTx = TransactionBuilder.fromXDR(signedTxXdr, this.networkPassphrase) as Transaction;
+
+      const sendResponse = await this.server.sendTransaction(signedTx);
+      if (sendResponse.status === 'ERROR') {
+        throw new Error(`SoroWill transaction submission failed for ${method}`);
+      }
+
+      const txResponse = await this.server.pollTransaction(sendResponse.hash, { attempts: 30 });
+      if (txResponse.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+        throw new Error(`SoroWill transaction for ${method} did not succeed: ${txResponse.status}`);
+      }
+
+      txHash = sendResponse.hash;
+
+      const afterCtx: AfterInvokeContext = {
+        method,
+        args,
+        timestamp: new Date().toISOString(),
+        txHash,
+        error: null,
+        durationMs: Date.now() - startTime,
+      };
+      await this.hooks.runAfterInvoke(afterCtx);
+
+      return {
+        txHash: sendResponse.hash,
+        createdAt: txResponse.createdAt,
+        returnValue: txResponse.returnValue,
+      };
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      if (error) {
+        const afterCtx: AfterInvokeContext = {
+          method,
+          args,
+          timestamp: new Date().toISOString(),
+          txHash,
+          error,
+          durationMs: Date.now() - startTime,
+        };
+        await this.hooks.runAfterInvoke(afterCtx);
+      }
+    }
   }
 }
