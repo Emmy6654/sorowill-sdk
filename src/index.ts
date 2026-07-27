@@ -6,6 +6,14 @@ export type {
 } from './SoroWillClient';
 
 export type {
+  Beneficiary,
+  CreateWillParams,
+  EventSubscription,
+  EventSubscriptionOptions,
+  EventSubscriptionTransport,
+  PaginatedWillsResult,
+  PaginationOptions,
+  SoroWillEvent,
   BatchOperation,
   BatchResult,
   Beneficiary,

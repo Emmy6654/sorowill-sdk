@@ -31,6 +31,11 @@ const client = new SoroWillClient({
   requestsPerSecond: 10,
 });
 
+// Or construct from environment variables in Node-based apps:
+// SOROWILL_NETWORK=testnet
+// SOROWILL_CONTRACT_ID=CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE
+// const client = SoroWillClient.fromEnv();
+
 // Create a will locking 1,000 USDC, split 60/40 between two beneficiaries,
 // with a 90-day check-in period and a 7-day grace period.
 const { willId, txHash } = await client.createWill({
@@ -68,9 +73,10 @@ console.log(will.status, will.balance, will.beneficiaries);
 | `cancelWill` | Withdraws the full balance and closes the will | `willId` | `Promise<{ txHash, refundAmount }>` |
 | `updateBeneficiaries` | Replaces the beneficiary list before the will is triggered | `UpdateBeneficiariesParams` | `Promise<{ txHash }>` |
 | `topUp` | Adds more of the token to an existing will | `willId`, `amount` | `Promise<{ txHash }>` |
+| `previewFee` | Simulates a state-changing method and returns its estimated Soroban resource fee | `method`, `params` | `Promise<{ resourceFee }>` |
 | `getWill` | Reads the full state of a will (no wallet required) | `willId` | `Promise<Will>` |
-| `getWillsByOwner` | Lists every will owned by an address (no wallet required) | `owner` | `Promise<Will[]>` |
-| `getWillsByBeneficiary` | Lists every will an address is named in (no wallet required) | `beneficiary` | `Promise<Will[]>` |
+| `getWillsByOwner` | Lists every will owned by an address, with optional client-side pagination | `owner`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
+| `getWillsByBeneficiary` | Lists every will an address is named in, with optional client-side pagination | `beneficiary`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
 | `guardianTrigger` | Casts a guardian vote; 2 of 3 forces an early release | `willId` | `Promise<{ txHash }>` |
 | `batch` | Simulates, signs, and submits multiple contract operations atomically | `BatchOperation[]` | `Promise<BatchResult>` |
 

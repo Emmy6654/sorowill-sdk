@@ -69,6 +69,56 @@ export interface UpdateBeneficiariesParams {
   beneficiaries: Beneficiary[];
 }
 
+/** Optional client-side pagination controls for list-style SDK methods. */
+export interface PaginationOptions {
+  /** Maximum number of wills to return in this page. */
+  pageSize?: number;
+  /** Opaque cursor returned by the previous page, if any. */
+  cursor?: string;
+}
+
+/** A page of wills plus the cursor needed to fetch the next page, if any. */
+export interface PaginatedWillsResult {
+  wills: Will[];
+  nextCursor: string | null;
+}
+
+/** Normalized contract event emitted by the SoroWill contract. */
+export interface SoroWillEvent {
+  id: string;
+  cursor: string;
+  ledger: number | null;
+  ledgerClosedAt: Date | null;
+  contractId: string | null;
+  txHash: string | null;
+  type: string | null;
+  topics: unknown[];
+  value: unknown;
+  raw: unknown;
+}
+
+/** Which transport backs an active event subscription. */
+export type EventSubscriptionTransport = 'polling' | 'websocket';
+
+/** Controls how event subscriptions are established and paged. */
+export interface EventSubscriptionOptions {
+  /** Cursor to resume from. Omit to start from the latest available cursor. */
+  cursor?: string;
+  /** Maximum number of events to request per fetch/stream chunk. */
+  pageSize?: number;
+  /** Polling interval when the polling transport is used. */
+  pollIntervalMs?: number;
+  /** Force a specific transport, or auto-negotiate with WebSocket fallback. */
+  transport?: 'auto' | EventSubscriptionTransport;
+  /** Optional callback for transport-level errors. */
+  onError?: (error: Error) => void;
+}
+
+/** Handle for an active event subscription. */
+export interface EventSubscription {
+  readonly transport: EventSubscriptionTransport;
+  readonly closed: boolean;
+  close(): void;
 /** Options accepted by individual SDK calls. */
 export interface RequestOptions {
   /** Overrides the client's default RPC timeout for this call. */

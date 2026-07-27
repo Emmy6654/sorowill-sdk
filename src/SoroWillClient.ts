@@ -56,6 +56,46 @@ const NETWORK_CONFIG: Record<SoroWillNetwork, NetworkConfig> = {
   },
 };
 
+type EnvSource = Record<string, string | undefined>;
+type FetchImplementation = typeof fetch;
+
+interface WebSocketLike {
+  close(): void;
+  send(data: string): void;
+  onclose: ((event: { code?: number; reason?: string }) => void) | null;
+  onerror: ((event: Event | unknown) => void) | null;
+  onmessage: ((event: { data: string }) => void) | null;
+  onopen: ((event: Event | unknown) => void) | null;
+}
+
+interface JsonRpcSuccess<T> {
+  result: T;
+}
+
+interface JsonRpcFailure {
+  error: {
+    code?: number;
+    message?: string;
+  };
+}
+
+interface RpcEventRecord {
+  contractId?: string;
+  id?: string;
+  ledger?: number;
+  ledgerClosedAt?: string;
+  pagingToken?: string;
+  topic?: unknown[];
+  topics?: unknown[];
+  txHash?: string;
+  type?: string;
+  value?: unknown;
+}
+
+interface RpcEventPage {
+  events?: RpcEventRecord[];
+  nextCursor?: string | null;
+}
 export interface SoroWillReadCacheOptions extends Pick<ReadCacheOptions, 'ttlMs'> {}
 
 /** Options for constructing a {@link SoroWillClient}. */
@@ -64,6 +104,20 @@ export interface SoroWillClientOptions {
   network: SoroWillNetwork;
   /** The deployed SoroWill contract's address. */
   contractId: string;
+  /** Optional override for the Soroban RPC endpoint. */
+  rpcUrl?: string;
+  /** Optional override for the Stellar network passphrase. */
+  networkPassphrase?: string;
+  /** Optional override for the endpoint used for event polling. */
+  eventRpcUrl?: string;
+  /** Optional override for the WebSocket event streaming endpoint. */
+  eventStreamUrl?: string;
+  /** Default polling interval for event subscriptions. */
+  defaultPollIntervalMs?: number;
+  /** Internal/testing override for the fetch implementation. */
+  fetch?: FetchImplementation;
+  /** Internal/testing override for WebSocket construction. */
+  webSocketFactory?: (url: string) => WebSocketLike;
   /** Default timeout applied to each RPC request. Defaults to 30 seconds. */
   timeoutMs?: number;
   /** Maximum number of RPC requests in flight at once. Defaults to 4. */
@@ -94,6 +148,13 @@ interface RawWill {
   guardian_votes: number;
 }
 
+interface SimulatedCallResult {
+  result?: {
+    retval: ScVal;
+  };
+  minResourceFee?: string;
+}
+
 function mapWill(raw: RawWill): Will {
   return {
     id: raw.id.toString(),
@@ -111,6 +172,72 @@ function mapWill(raw: RawWill): Will {
   };
 }
 
+function mapEventRecord(record: RpcEventRecord, fallbackContractId: string): SoroWillEvent {
+  const cursor = record.pagingToken ?? record.id ?? '';
+  return {
+    id: record.id ?? cursor,
+    cursor,
+    ledger: record.ledger ?? null,
+    ledgerClosedAt: record.ledgerClosedAt ? new Date(record.ledgerClosedAt) : null,
+    contractId: record.contractId ?? fallbackContractId,
+    txHash: record.txHash ?? null,
+    type: record.type ?? null,
+    topics: record.topics ?? record.topic ?? [],
+    value: record.value,
+    raw: record,
+  };
+}
+
+function isPaginationRequested(options: PaginationOptions | undefined): options is PaginationOptions {
+  return options !== undefined && (options.pageSize !== undefined || options.cursor !== undefined);
+}
+
+function paginateWills(wills: Will[], options: PaginationOptions | undefined): Will[] | PaginatedWillsResult {
+  if (!isPaginationRequested(options)) {
+    return wills;
+  }
+
+  const start = parseCursor(options.cursor);
+  const pageSize = normalizePositiveInteger(options.pageSize, 'pageSize');
+  const end = pageSize === null ? wills.length : Math.min(start + pageSize, wills.length);
+
+  return {
+    wills: wills.slice(start, end),
+    nextCursor: end < wills.length ? String(end) : null,
+  };
+}
+
+function parseCursor(cursor: string | undefined): number {
+  if (cursor === undefined) {
+    return 0;
+  }
+  if (!/^\d+$/.test(cursor)) {
+    throw new Error(`Invalid pagination cursor: "${cursor}"`);
+  }
+  return Number(cursor);
+}
+
+function normalizePositiveInteger(value: number | undefined, label: string): number | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function getDefaultEnv(): EnvSource {
+  if (typeof process !== 'undefined' && process.env) {
+    return process.env;
+  }
+  return {};
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 /**
  * A client for interacting with a deployed SoroWill contract from
  * TypeScript. Read methods (`getWill`, `getWillsByOwner`,
@@ -122,6 +249,11 @@ export class SoroWillClient {
   private readonly rpcPool: RpcEndpointPool;
   private readonly contract: Contract;
   private readonly networkPassphrase: string;
+  private readonly eventRpcUrl: string;
+  private readonly eventStreamUrl: string;
+  private readonly defaultPollIntervalMs: number;
+  private readonly fetchImplementation?: FetchImplementation;
+  private readonly webSocketFactory?: (url: string) => WebSocketLike;
   private readonly queue: RequestQueue;
   private readonly timeoutMs: number;
   private readonly readCache: ReadCache | undefined;
@@ -131,6 +263,54 @@ export class SoroWillClient {
     const config = NETWORK_CONFIG[options.network];
     const rpcUrl = options.rpcUrl ?? config.rpcUrl;
     this.server = new rpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith('http://') });
+    this.contract = new Contract(options.contractId);
+    this.networkPassphrase = options.networkPassphrase ?? config.networkPassphrase;
+    this.eventRpcUrl = options.eventRpcUrl ?? rpcUrl;
+    this.eventStreamUrl = options.eventStreamUrl ?? this.deriveDefaultEventStreamUrl(this.eventRpcUrl);
+    this.defaultPollIntervalMs = normalizePositiveInteger(
+      options.defaultPollIntervalMs,
+      'defaultPollIntervalMs',
+    ) ?? 5_000;
+    this.fetchImplementation = options.fetch;
+    this.webSocketFactory = options.webSocketFactory;
+  }
+
+  /**
+   * Constructs a client from environment variables.
+   *
+   * Expected variables:
+   * - `SOROWILL_NETWORK`
+   * - `SOROWILL_CONTRACT_ID`
+   * - `SOROWILL_RPC_URL` (optional)
+   * - `SOROWILL_NETWORK_PASSPHRASE` (optional)
+   * - `SOROWILL_EVENT_RPC_URL` (optional)
+   * - `SOROWILL_EVENT_STREAM_URL` (optional)
+   * - `SOROWILL_EVENTS_POLL_INTERVAL_MS` (optional)
+   */
+  static fromEnv(env: EnvSource = getDefaultEnv()): SoroWillClient {
+    const network = env.SOROWILL_NETWORK;
+    if (network !== 'testnet' && network !== 'mainnet') {
+      throw new Error('SOROWILL_NETWORK must be set to "testnet" or "mainnet"');
+    }
+
+    const contractId = env.SOROWILL_CONTRACT_ID;
+    if (!contractId) {
+      throw new Error('SOROWILL_CONTRACT_ID must be set');
+    }
+
+    const pollInterval = env.SOROWILL_EVENTS_POLL_INTERVAL_MS
+      ? Number(env.SOROWILL_EVENTS_POLL_INTERVAL_MS)
+      : undefined;
+
+    return new SoroWillClient({
+      network,
+      contractId,
+      rpcUrl: env.SOROWILL_RPC_URL,
+      networkPassphrase: env.SOROWILL_NETWORK_PASSPHRASE,
+      eventRpcUrl: env.SOROWILL_EVENT_RPC_URL,
+      eventStreamUrl: env.SOROWILL_EVENT_STREAM_URL,
+      defaultPollIntervalMs: pollInterval,
+    });
     this.contract = new Contract(options.contractId);
     this.networkPassphrase = config.networkPassphrase;
     this.timeoutMs = options.timeoutMs ?? 30_000;
@@ -401,10 +581,24 @@ export class SoroWillClient {
       throw mapContractError(error);
   private async read<T>(method: string, args: Record<string, unknown>): Promise<T> {
     const spec = await this.getSpec();
+    const simulation = await this.simulate(method, args, NULL_ACCOUNT);
+    if (!simulation.result) {
+      throw new Error(`SoroWill simulation for ${method} returned no result`);
+    }
+    return spec.funcResToNative(method, simulation.result.retval) as T;
+  }
+
+  private async simulate(
+    method: string,
+    args: Record<string, unknown>,
+    sourceAccount: string,
+  ): Promise<SimulatedCallResult> {
+    const spec = await this.getSpec();
     const scArgs = spec.funcArgsToScVals(method, args);
     const operation = this.contract.call(method, ...scArgs);
+    const account =
+      sourceAccount === NULL_ACCOUNT ? new Account(NULL_ACCOUNT, '0') : await this.server.getAccount(sourceAccount);
 
-    const account = new Account(NULL_ACCOUNT, '0');
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.networkPassphrase,
