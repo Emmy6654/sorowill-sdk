@@ -164,7 +164,34 @@ export interface SoroWillClientOptions {
   retry?: Partial<RpcRetryOptions>;
   /** Advanced override for testing or custom transports. */
   rpcServer?: SoroWillRpcServer;
-  /** Advanced override for testing or preloaded contract specs. */
+  /**
+   * Advanced override for testing or preloaded contract specs.
+   *
+   * By injecting a pre-built spec you can write snapshot tests that lock in
+   * the exact `ScVal` / XDR encoding produced by `funcArgsToScVals` for each
+   * state-changing method. This guards against silent encoding regressions
+   * introduced by a future `@stellar/stellar-sdk` upgrade — the spec object
+   * is what drives argument encoding, so swapping it in tests lets you assert
+   * the exact serialised shape without making real RPC calls.
+   *
+   * @example
+   * ```ts
+   * import { contract } from '@stellar/stellar-sdk';
+   *
+   * const spec = new contract.Spec(rawSpecXdrEntries);
+   *
+   * // In your snapshot test:
+   * const scVals = spec.funcArgsToScVals('create_will', { owner: 'G...', ... });
+   * expect(scVals.map((v) => v.toXDR('base64'))).toMatchSnapshot();
+   *
+   * // And in the client under test:
+   * const client = new SoroWillClient({ network: 'testnet', contractId: 'C...', spec });
+   * ```
+   *
+   * See `CONTRIBUTING.md` → *ScVal / XDR snapshot tests* for the full
+   * workflow, including how to intentionally update snapshots when a
+   * dependency upgrade legitimately changes encoding.
+   */
   spec?: ContractSpecLike | Promise<ContractSpecLike>;
   /** Optional override for the Soroban RPC endpoint. */
   rpcUrl?: string;
@@ -176,7 +203,39 @@ export interface SoroWillClientOptions {
   eventStreamUrl?: string;
   /** Default polling interval for event subscriptions. */
   defaultPollIntervalMs?: number;
-  /** Internal/testing override for the fetch implementation. */
+  /**
+   * Optional override for the `fetch` implementation used by event-polling
+   * requests inside the SDK.
+   *
+   * **When to use this:**
+   * - Injecting a polyfill in environments where a global `fetch` is not
+   *   available (older Node versions, some React Native runtimes).
+   * - Adding custom headers or proxy logic to outbound HTTP requests.
+   * - Providing a mock in unit tests without patching the global.
+   *
+   * **Important:** This option only affects the SDK's own HTTP calls (event
+   * polling). The underlying `@stellar/stellar-sdk` `rpc.Server` uses its own
+   * fetch binding, which cannot be overridden through this option. If you need
+   * a custom fetch for all Soroban RPC traffic, install a global fetch
+   * polyfill (e.g. `node-fetch` v3, or `cross-fetch`) before constructing the
+   * client:
+   *
+   * ```ts
+   * import fetch from 'node-fetch';
+   * globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+   * ```
+   *
+   * @example
+   * ```ts
+   * import fetch from 'node-fetch';
+   *
+   * const client = new SoroWillClient({
+   *   network: 'testnet',
+   *   contractId: 'C...',
+   *   fetch: fetch as unknown as typeof globalThis.fetch,
+   * });
+   * ```
+   */
   fetch?: FetchImplementation;
   /** Internal/testing override for WebSocket construction. */
   webSocketFactory?: (url: string) => WebSocketLike;
