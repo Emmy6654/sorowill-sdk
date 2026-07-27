@@ -26,6 +26,9 @@ const wallet = await connectWallet();
 const client = new SoroWillClient({
   network: 'testnet',
   contractId: 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE',
+  timeoutMs: 15_000,
+  maxConcurrentRequests: 4,
+  requestsPerSecond: 10,
 });
 
 // Or construct from environment variables in Node-based apps:
@@ -75,57 +78,48 @@ console.log(will.status, will.balance, will.beneficiaries);
 | `getWillsByOwner` | Lists every will owned by an address, with optional client-side pagination | `owner`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
 | `getWillsByBeneficiary` | Lists every will an address is named in, with optional client-side pagination | `beneficiary`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
 | `guardianTrigger` | Casts a guardian vote; 2 of 3 forces an early release | `willId` | `Promise<{ txHash }>` |
-| `subscribeToEvents` | Subscribes to contract events via WebSocket with polling fallback | `onEvent`, `EventSubscriptionOptions?` | `Promise<EventSubscription>` |
+| `batch` | Simulates, signs, and submits multiple contract operations atomically | `BatchOperation[]` | `Promise<BatchResult>` |
 
-## Environment-based configuration
+Every method also accepts an optional final `{ timeoutMs }` argument. RPC work flows through a
+shared FIFO queue configured by `maxConcurrentRequests` and `requestsPerSecond`, preventing bursts
+of reads or writes from overwhelming a public endpoint. A timeout rejects with
+`RequestTimeoutError`.
 
-`SoroWillClient.fromEnv()` reads the following variables:
+## Batch transactions
 
-- `SOROWILL_NETWORK` — required, `testnet` or `mainnet`
-- `SOROWILL_CONTRACT_ID` — required, deployed SoroWill contract ID
-- `SOROWILL_RPC_URL` — optional RPC override
-- `SOROWILL_NETWORK_PASSPHRASE` — optional network passphrase override
-- `SOROWILL_EVENT_RPC_URL` — optional separate RPC endpoint for event polling
-- `SOROWILL_EVENT_STREAM_URL` — optional WebSocket endpoint for event streaming
-- `SOROWILL_EVENTS_POLL_INTERVAL_MS` — optional default polling interval override
-
-## Pagination
-
-Both `getWillsByOwner` and `getWillsByBeneficiary` now support optional client-side windowing:
+`batch` combines native contract calls into one Stellar transaction and therefore one Freighter
+signature prompt:
 
 ```ts
-const firstPage = await client.getWillsByOwner('GOWNER...', { pageSize: 10 });
-if (!Array.isArray(firstPage)) {
-  console.log(firstPage.wills, firstPage.nextCursor);
-}
+const result = await client.batch([
+  {
+    method: 'create_will',
+    args: {
+      owner: wallet.publicKey,
+      token: 'CBIEL...DAMA',
+      amount: 10_000_000n,
+      beneficiaries: [{ address: 'GBEN...AAAA', percentage: 100 }],
+      checkin_period_days: 90n,
+      grace_period_days: 7n,
+      guardians: [],
+    },
+  },
+  {
+    method: 'check_in',
+    args: { will_id: 1n, owner: wallet.publicKey },
+  },
+]);
 ```
 
-When pagination options are omitted, these methods continue returning the full `Will[]`.
+The whole batch is simulated and assembled together, signed once, and submitted atomically.
 
-## Fee preview
+## Typed errors
 
-Use `previewFee()` to simulate a write method and show an estimated Soroban resource fee before asking the user to sign:
-
-```ts
-const { resourceFee } = await client.previewFee('top_up', {
-  will_id: 1n,
-  owner: 'GOWNER...',
-  amount: 5000000n,
-});
-```
-
-## Event subscriptions
-
-Use `subscribeToEvents()` to receive lower-latency contract events when the configured endpoint supports WebSocket streaming. In the default `auto` mode, the SDK falls back to polling automatically if streaming is unavailable.
-
-```ts
-const subscription = await client.subscribeToEvents((event) => {
-  console.log(event.type, event.topics, event.value);
-});
-
-// Later:
-subscription.close();
-```
+Contract failures are exposed as subclasses of `WillContractError`, including
+`WillNotFoundError`, `NotOwnerError`, `WillNotActiveError`, `WillNotTriggeredError`,
+`GracePeriodNotExpiredError`, `GracePeriodExpiredError`, `InvalidPercentagesError`,
+`AlreadyVotedError`, `NotGuardianError`, `CheckinNotDueError`, `ZeroAmountError`, and
+`TooManyBeneficiariesError`.
 
 ## Utilities
 
