@@ -8,41 +8,12 @@ export interface WalletConnection {
 }
 
 /**
- * The minimal capability set a Stellar wallet must expose for
+ * The full capability set a Stellar wallet must expose for
  * {@link SoroWillClient} to read the connected account and sign transactions.
  *
  * Any wallet — Freighter, Albedo, xBull, Rabet, Lobstr, etc. — can be plugged
- * into the client by implementing this interface. The module-level
- * {@link getPublicKey} and {@link signTransaction} functions already satisfy
- * it (see {@link freighterAdapter}).
+ * into the client by implementing this interface.
  */
-export interface WalletAdapter {
-  /**
-   * Returns the connected account's public key (`G...`). May prompt the user
-   * to select or connect an account, depending on the wallet.
-   */
-  getPublicKey(): Promise<string>;
-  /**
-   * Signs a base64-encoded transaction XDR envelope for the given network and
-   * resolves with the signed XDR.
-   */
-  signTransaction(
-    transactionXdr: string,
-    opts: { networkPassphrase: string },
-  ): Promise<string>;
-}
-
-/**
- * Checks whether the Freighter browser extension is installed. This does not
- * require the current site to be connected/allowed — it only checks for the
- * extension's presence.
- */
-export async function isFreighterInstalled(): Promise<boolean> {
-  const { isConnected, error } = await freighterApi.isConnected();
-  if (error) {
-    return false;
-  }
-  return isConnected;
 export interface WalletAdapter {
   isConnected(): Promise<boolean>;
   connect(): Promise<WalletConnection>;
