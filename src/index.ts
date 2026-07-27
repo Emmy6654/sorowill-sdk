@@ -18,6 +18,16 @@ export type {
   HookRegistry,
 } from './hooks';
 
+export {
+  MultisigCollector,
+  buildMultisigTransactionXdr,
+  signWithSecretKey,
+} from './multisig';
+export type {
+  CollectedSignature,
+  MultisigCollectorOptions,
+} from './multisig';
+
 export type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
 export type {
   Beneficiary,
