@@ -1,5 +1,9 @@
 export { SoroWillClient } from './SoroWillClient';
-export type { SoroWillClientOptions, SoroWillNetwork } from './SoroWillClient';
+export type {
+  SoroWillClientOptions,
+  SoroWillNetwork,
+  SoroWillReadCacheOptions,
+} from './SoroWillClient';
 
 export type {
   BatchOperation,
@@ -34,6 +38,17 @@ export type { RequestQueueOptions } from './requestQueue';
 
 export { connectWallet, getPublicKey, isFreighterInstalled, signTransaction } from './wallet';
 export type { WalletConnection } from './wallet';
+
+export { buildSep7TxUri, parseSep7Callback } from './sep7';
+export type { BuildSep7TxUriOptions, Sep7CallbackResult } from './sep7';
+
+export {
+  connectAlbedo,
+  connectAlbedoWithNetwork,
+  getAlbedoPublicKey,
+  signAlbedoTransaction,
+} from './albedo';
+export type { AlbedoWalletConnection } from './albedo';
 
 export {
   calculateShares,
