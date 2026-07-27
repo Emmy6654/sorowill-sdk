@@ -9,6 +9,16 @@ export type {
   SoroWillReadCacheOptions,
 } from './SoroWillClient';
 
+export { HookManager } from './hooks';
+export type {
+  AfterInvokeContext,
+  AfterInvokeHook,
+  BeforeInvokeContext,
+  BeforeInvokeHook,
+  HookRegistry,
+} from './hooks';
+
+export type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
 export type {
   Beneficiary,
   CreateWillParams,

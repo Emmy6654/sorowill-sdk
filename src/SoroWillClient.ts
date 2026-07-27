@@ -45,6 +45,8 @@ import { RpcEndpointPool } from './rpc';
 import { buildSep7TxUri, type BuildSep7TxUriOptions } from './sep7';
 import type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
 import { WillStatus } from './types';
+import { HookManager } from './hooks';
+import type { BeforeInvokeContext, AfterInvokeContext } from './hooks';
 import { assertPreparedTransactionMatchesIntendedOperation } from './txValidation';
 import { getPublicKey, signTransaction } from './wallet';
 
@@ -143,6 +145,8 @@ export interface SoroWillClientOptions {
   network: SoroWillNetwork;
   /** The deployed SoroWill contract's address. */
   contractId: string;
+  /** Optional hook manager for intercepting contract calls. */
+  hooks?: HookManager;
   /**
    * The wallet used to read the connected account and sign transactions.
    * Defaults to {@link freighterAdapter} (the Freighter browser extension) for
@@ -336,6 +340,7 @@ export class SoroWillClient {
   private readonly server: SoroWillRpcServer;
   private readonly contract: Contract;
   private readonly networkPassphrase: string;
+  private readonly hooks: HookManager;
   private readonly wallet: WalletAdapter;
   private specPromise: Promise<InstanceType<typeof Spec>> | undefined;
   private readonly retryOptions: RpcRetryOptions;
@@ -351,6 +356,7 @@ export class SoroWillClient {
       new rpc.Server(config.rpcUrl, { allowHttp: config.rpcUrl.startsWith('http://') });
     this.contract = new Contract(options.contractId);
     this.networkPassphrase = config.networkPassphrase;
+    this.hooks = options.hooks ?? new HookManager();
     this.wallet = options.wallet ?? freighterAdapter;
     this.wallet = options.wallet ?? getDefaultWalletAdapter();
     this.retryOptions = { ...DEFAULT_RETRY_OPTIONS, ...options.retry };
@@ -789,6 +795,84 @@ export class SoroWillClient {
     args: Record<string, unknown>,
     options?: RequestOptions,
   ): Promise<{ txHash: string; createdAt: number; returnValue: ScVal | undefined }> {
+    const beforeCtx: BeforeInvokeContext = {
+      method,
+      args,
+      timestamp: new Date().toISOString(),
+    };
+    const proceed = await this.hooks.runBeforeInvoke(beforeCtx);
+    if (!proceed) {
+      throw new Error(`SoroWill invocation aborted by beforeInvoke hook for ${method}`);
+    }
+
+    const startTime = Date.now();
+    let txHash: string | null = null;
+    let error: string | null = null;
+
+    try {
+      const spec = await this.getSpec();
+      const scArgs = spec.funcArgsToScVals(method, args);
+      const operation = this.contract.call(method, ...scArgs);
+
+      const publicKey = await getPublicKey();
+      const account = await this.server.getAccount(publicKey);
+      const builtTx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
+
+      const prepared = await this.server.prepareTransaction(builtTx);
+      const signedTxXdr = await signTransaction(prepared.toXDR(), {
+        networkPassphrase: this.networkPassphrase,
+      });
+      const signedTx = TransactionBuilder.fromXDR(signedTxXdr, this.networkPassphrase) as Transaction;
+
+      const sendResponse = await this.server.sendTransaction(signedTx);
+      if (sendResponse.status === 'ERROR') {
+        throw new Error(`SoroWill transaction submission failed for ${method}`);
+      }
+
+      const txResponse = await this.server.pollTransaction(sendResponse.hash, { attempts: 30 });
+      if (txResponse.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+        throw new Error(`SoroWill transaction for ${method} did not succeed: ${txResponse.status}`);
+      }
+
+      txHash = sendResponse.hash;
+
+      const afterCtx: AfterInvokeContext = {
+        method,
+        args,
+        timestamp: new Date().toISOString(),
+        txHash,
+        error: null,
+        durationMs: Date.now() - startTime,
+      };
+      await this.hooks.runAfterInvoke(afterCtx);
+
+      return {
+        txHash: sendResponse.hash,
+        createdAt: txResponse.createdAt,
+        returnValue: txResponse.returnValue,
+      };
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      if (error) {
+        const afterCtx: AfterInvokeContext = {
+          method,
+          args,
+          timestamp: new Date().toISOString(),
+          txHash,
+          error,
+          durationMs: Date.now() - startTime,
+        };
+        await this.hooks.runAfterInvoke(afterCtx);
+      }
+    }
     const spec = await this.getSpec(options);
     const operation = this.contract.call(method, ...spec.funcArgsToScVals(method, args));
     return this.submit([operation], method, options);
