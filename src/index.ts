@@ -28,6 +28,17 @@ export type {
   MultisigCollectorOptions,
 } from './multisig';
 
+export {
+  buildFeeBumpXdr,
+  signFeeBumpXdr,
+  submitFeeBump,
+  submitFeeBumpTransaction,
+} from './feeBump';
+export type {
+  FeeBumpOptions,
+  SubmitFeeBumpOptions,
+} from './feeBump';
+
 export type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
 export type {
   Beneficiary,
