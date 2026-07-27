@@ -68,3 +68,23 @@ export interface UpdateBeneficiariesParams {
   willId: string;
   beneficiaries: Beneficiary[];
 }
+
+/** Options accepted by individual SDK calls. */
+export interface RequestOptions {
+  /** Overrides the client's default RPC timeout for this call. */
+  timeoutMs?: number;
+}
+
+/** A contract invocation to include in a single batch transaction. */
+export interface BatchOperation {
+  /** Contract function name, such as `create_will` or `check_in`. */
+  method: string;
+  /** Native named arguments expected by the deployed contract spec. */
+  args: Record<string, unknown>;
+}
+
+/** Result of submitting a batch as one atomic Stellar transaction. */
+export interface BatchResult {
+  txHash: string;
+  createdAt: number;
+}
