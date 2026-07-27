@@ -27,6 +27,7 @@ import { getDefaultWalletAdapter, type WalletAdapter } from './wallet';
 type ScVal = xdr.ScVal;
 type ScVal = xdr.ScVal;
 
+import { freighterAdapter, type WalletAdapter } from './wallet';
 import { getPublicKey, signTransaction } from './wallet';
 import { mapContractError, SoroWillError } from './errors';
 import { RequestQueue } from './requestQueue';
@@ -142,6 +143,13 @@ export interface SoroWillClientOptions {
   network: SoroWillNetwork;
   /** The deployed SoroWill contract's address. */
   contractId: string;
+  /**
+   * The wallet used to read the connected account and sign transactions.
+   * Defaults to {@link freighterAdapter} (the Freighter browser extension) for
+   * backwards compatibility. Supply any {@link WalletAdapter} — e.g.
+   * `createAlbedoAdapter()` — to use a different Stellar wallet.
+   */
+  wallet?: WalletAdapter;
   /** Wallet adapter used for state-changing calls. Defaults to Freighter. */
   wallet?: WalletAdapter;
   /** Read-cache configuration. Pass `false` to disable caching entirely. */
@@ -329,6 +337,7 @@ export class SoroWillClient {
   private readonly contract: Contract;
   private readonly networkPassphrase: string;
   private readonly wallet: WalletAdapter;
+  private specPromise: Promise<InstanceType<typeof Spec>> | undefined;
   private readonly retryOptions: RpcRetryOptions;
   private readonly readCache: ReadCache | undefined;
   private readonly specOverride: ContractSpecLike | Promise<ContractSpecLike> | undefined;
@@ -342,6 +351,7 @@ export class SoroWillClient {
       new rpc.Server(config.rpcUrl, { allowHttp: config.rpcUrl.startsWith('http://') });
     this.contract = new Contract(options.contractId);
     this.networkPassphrase = config.networkPassphrase;
+    this.wallet = options.wallet ?? freighterAdapter;
     this.wallet = options.wallet ?? getDefaultWalletAdapter();
     this.retryOptions = { ...DEFAULT_RETRY_OPTIONS, ...options.retry };
     this.readCache = options.readCache === false ? undefined : new ReadCache(options.readCache);

@@ -30,6 +30,7 @@ export { WillStatus } from './types';
 
 export {
   connectWallet,
+  freighterAdapter,
   FreighterWalletAdapter,
   getDefaultWalletAdapter,
   getPublicKey,
@@ -38,6 +39,7 @@ export {
 } from './wallet';
 export type { WalletAdapter, WalletConnection } from './wallet';
 
+export { createAlbedoAdapter } from './adapters/albedo';
 export {
   LocalStorageWalletConnectSessionStore,
   MemoryWalletConnectSessionStore,
