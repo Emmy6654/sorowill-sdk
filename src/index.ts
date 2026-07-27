@@ -1,6 +1,17 @@
 export { SoroWillClient } from './SoroWillClient';
 export type { SoroWillClientOptions, SoroWillNetwork } from './SoroWillClient';
 
+export {
+  buildFeeBumpXdr,
+  signFeeBumpXdr,
+  submitFeeBump,
+  submitFeeBumpTransaction,
+} from './feeBump';
+export type {
+  FeeBumpOptions,
+  SubmitFeeBumpOptions,
+} from './feeBump';
+
 export type { Beneficiary, CreateWillParams, UpdateBeneficiariesParams, Will } from './types';
 export { WillStatus } from './types';
 
