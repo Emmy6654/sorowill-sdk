@@ -39,7 +39,15 @@ const client = new SoroWillClient({
     maxAttempts: 3,
     initialDelayMs: 250,
   },
+  timeoutMs: 15_000,
+  maxConcurrentRequests: 4,
+  requestsPerSecond: 10,
 });
+
+// Or construct from environment variables in Node-based apps:
+// SOROWILL_NETWORK=testnet
+// SOROWILL_CONTRACT_ID=CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE
+// const client = SoroWillClient.fromEnv();
 
 // Create a will locking 1,000 USDC, split 60/40 between two beneficiaries,
 // with a 90-day check-in period and a 7-day grace period.
@@ -78,10 +86,53 @@ console.log(will.status, will.balance, will.beneficiaries);
 | `cancelWill` | Withdraws the full balance and closes the will | `willId` | `Promise<{ txHash, refundAmount }>` |
 | `updateBeneficiaries` | Replaces the beneficiary list before the will is triggered | `UpdateBeneficiariesParams` | `Promise<{ txHash }>` |
 | `topUp` | Adds more of the token to an existing will | `willId`, `amount` | `Promise<{ txHash }>` |
+| `previewFee` | Simulates a state-changing method and returns its estimated Soroban resource fee | `method`, `params` | `Promise<{ resourceFee }>` |
 | `getWill` | Reads the full state of a will (no wallet required) | `willId` | `Promise<Will>` |
-| `getWillsByOwner` | Lists every will owned by an address (no wallet required) | `owner` | `Promise<Will[]>` |
-| `getWillsByBeneficiary` | Lists every will an address is named in (no wallet required) | `beneficiary` | `Promise<Will[]>` |
+| `getWillsByOwner` | Lists every will owned by an address, with optional client-side pagination | `owner`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
+| `getWillsByBeneficiary` | Lists every will an address is named in, with optional client-side pagination | `beneficiary`, `PaginationOptions?` | `Promise<Will[] \| { wills, nextCursor }>` |
 | `guardianTrigger` | Casts a guardian vote; 2 of 3 forces an early release | `willId` | `Promise<{ txHash }>` |
+| `batch` | Simulates, signs, and submits multiple contract operations atomically | `BatchOperation[]` | `Promise<BatchResult>` |
+
+Every method also accepts an optional final `{ timeoutMs }` argument. RPC work flows through a
+shared FIFO queue configured by `maxConcurrentRequests` and `requestsPerSecond`, preventing bursts
+of reads or writes from overwhelming a public endpoint. A timeout rejects with
+`RequestTimeoutError`.
+
+## Batch transactions
+
+`batch` combines native contract calls into one Stellar transaction and therefore one Freighter
+signature prompt:
+
+```ts
+const result = await client.batch([
+  {
+    method: 'create_will',
+    args: {
+      owner: wallet.publicKey,
+      token: 'CBIEL...DAMA',
+      amount: 10_000_000n,
+      beneficiaries: [{ address: 'GBEN...AAAA', percentage: 100 }],
+      checkin_period_days: 90n,
+      grace_period_days: 7n,
+      guardians: [],
+    },
+  },
+  {
+    method: 'check_in',
+    args: { will_id: 1n, owner: wallet.publicKey },
+  },
+]);
+```
+
+The whole batch is simulated and assembled together, signed once, and submitted atomically.
+
+## Typed errors
+
+Contract failures are exposed as subclasses of `WillContractError`, including
+`WillNotFoundError`, `NotOwnerError`, `WillNotActiveError`, `WillNotTriggeredError`,
+`GracePeriodNotExpiredError`, `GracePeriodExpiredError`, `InvalidPercentagesError`,
+`AlreadyVotedError`, `NotGuardianError`, `CheckinNotDueError`, `ZeroAmountError`, and
+`TooManyBeneficiariesError`.
 
 ## Utilities
 
