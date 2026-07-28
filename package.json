@@ -28,12 +28,12 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "docs:api": "typedoc"
   },
   "dependencies": {
-    "@albedo-link/intent": "^0.13.0",
-    "@ledgerhq/hw-app-str": "^7.7.6",
     "@albedo-link/intent": "0.13.0",
+    "@ledgerhq/hw-app-str": "^7.7.6",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^16.0.1",
     "@testing-library/dom": "^10.4.1",
@@ -47,6 +47,7 @@
     "@types/react": "^19.0.0",
     "react": "^19.0.0",
     "tsup": "^8.5.1",
+    "typedoc": "^0.28.20",
     "typescript": "^5.9.3",
     "vitest": "^4.1.9"
   },
